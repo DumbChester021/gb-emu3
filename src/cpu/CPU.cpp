@@ -105,10 +105,7 @@ void CPU::HandleInterrupts() {
             // Find highest priority interrupt
             for (int i = 0; i < 5; i++) {
                 if (pending & (1 << i)) {
-                    // Clear IF bit via bus
-                    if (bus_write) {
-                        bus_write(0xFF0F, if_reg & ~(1 << i));
-                    }
+                    uint8_t int_bit = 1 << i;
                     
                     // === Interrupt Dispatch: 20 T-cycles (5 M-cycles) ===
                     // Per Cycle-Accurate GB Docs:
@@ -116,12 +113,44 @@ void CPU::HandleInterrupts() {
                     InternalDelay();  // M1: NOP/wait
                     InternalDelay();  // M2: NOP/wait
                     
-                    // 2. Push PC to stack (2 M-cycles = 8T)
-                    Push(pc);         // M3-M4: stack writes (8T ticked by WriteByte)
+                    // 2. Push PC high byte to stack (M3)
+                    // Per ie_push test: if this push writes to $FFFF (IE),
+                    // the interrupt may be cancelled
+                    sp--;
+                    WriteByte(sp, pc >> 8);  // High byte push (may write to $FFFF = IE)
                     
-                    // 3. Set PC to vector (1 M-cycle = 4T)
-                    InternalDelay();  // M5: PC update
-                    pc = 0x40 + (i * 8);  // $40, $48, $50, $58, $60
+                    // Re-read IE after high byte push (per ie_push test)
+                    ie_reg = bus_read ? bus_read(0xFFFF) : 0;
+                    
+                    // 3. Push PC low byte to stack (M4)
+                    sp--;
+                    WriteByte(sp, pc & 0xFF);  // Low byte push
+                    
+                    // 4. Set PC (M5) - re-evaluate interrupt selection
+                    InternalDelay();
+                    
+                    // Per ie_push test Round 4: after modifying IE, re-check which
+                    // interrupt is now highest priority pending. If the original was
+                    // cancelled, a different one may be dispatched.
+                    uint8_t new_pending = if_reg & ie_reg & 0x1F;
+                    
+                    if (!new_pending) {
+                        // No interrupts pending anymore - dispatch cancelled
+                        // PC = $0000 (full cancellation case)
+                        pc = 0x0000;
+                    } else {
+                        // Find highest priority of remaining pending interrupts
+                        for (int j = 0; j < 5; j++) {
+                            if (new_pending & (1 << j)) {
+                                // Clear IF bit and jump to this vector
+                                if (bus_write) {
+                                    bus_write(0xFF0F, if_reg & ~(1 << j));
+                                }
+                                pc = 0x40 + (j * 8);
+                                break;
+                            }
+                        }
+                    }
                     break;
                 }
             }

@@ -174,9 +174,13 @@ uint8_t Bus::DMARead(uint16_t addr) {
         if (cart_read) return cart_read(addr);
     } else if (addr < 0xE000) {
         if (wram_read) return wram_read(addr);
-    } else if (addr < 0xFE00) {
-        if (wram_read) return wram_read(addr - 0x2000);
+    } else {
+        // Per SameBoy memory.c line 1881:
+        // DMG: $E000-$FFFF mirrors to WRAM via (addr & ~0x2000)
+        // This maps: $E000->$C000, $FE00->$DE00, $FF00->$DF00
+        if (wram_read) return wram_read(addr & ~0x2000);
     }
     
     return OPEN_BUS;
 }
+
