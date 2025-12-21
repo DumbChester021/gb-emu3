@@ -46,6 +46,8 @@ public:
     bool HasBattery() const { return has_battery; }
     bool HasTimer() const { return has_timer; }
     bool IsLoaded() const { return rom_loaded; }
+    bool IsDirty() const { return ram_dirty; }  // RAM modified since last save
+    void ClearDirty() { ram_dirty = false; }    // Call after successful save
     
     // Get detailed ROM information for display
     std::string GetDetailedInfo() const;
@@ -55,8 +57,9 @@ private:
     std::vector<uint8_t> rom;
     
     // === External RAM (directly exposed, battery-backed) ===
-    std::vector<uint8_t> ram;
+    mutable std::vector<uint8_t> ram;  // mutable for const Read with banking
     bool ram_enabled;
+    mutable bool ram_dirty;  // Track if RAM was modified since last save
     
     // === MBC State (directly exposed internal MBC registers) ===
     uint8_t mbc_type;           // MBC variant (0 = none, 1, 2, 3, 5)

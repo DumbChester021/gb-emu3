@@ -319,6 +319,7 @@ Cartridge::Cartridge()
     , has_battery(false)
     , has_timer(false)
     , rom_loaded(false)
+    , ram_dirty(false)
 {
     rtc = {};
 }
@@ -739,6 +740,7 @@ void Cartridge::WriteRAM(uint16_t addr, uint8_t value) {
         } else {
             ram[offset] = value;
         }
+        ram_dirty = true;  // Track modification for efficient save
     }
 }
 
