@@ -92,10 +92,16 @@ public:
     // DMA needs direct bus access without normal restrictions
     uint8_t DMARead(uint16_t addr);
     
-    // Connect DMA active check (for OAM conflict resolution)
+    // Connect DMA callbacks for conflict resolution
+    // - is_active: For bus conflict detection (returns true when DMA is active)
+    // - is_blocking_oam: For OAM blocking (has stricter timing than is_active)
+    // - get_source: For determining DMA source address for bus conflict type
     using DMAActiveCallback = std::function<bool()>;
-    void ConnectDMA(DMAActiveCallback is_active) {
+    using DMASourceCallback = std::function<uint16_t()>;
+    void ConnectDMA(DMAActiveCallback is_active, DMAActiveCallback is_blocking_oam = nullptr, DMASourceCallback get_source = nullptr) {
         dma_active = is_active;
+        dma_blocking_oam = is_blocking_oam;
+        dma_source = get_source;
     }
     
 private:
@@ -124,7 +130,9 @@ private:
     ReadCallback bootrom_read;
     bool bootrom_enabled;
     
-    DMAActiveCallback dma_active;  // Returns true if DMA is active
+    DMAActiveCallback dma_active;       // Returns true if DMA is active (for bus conflict)
+    DMAActiveCallback dma_blocking_oam; // Returns true if DMA is blocking OAM access
+    DMASourceCallback dma_source;       // Returns DMA source address
     
     // === Open Bus (directly exposed default behavior) ===
     // Returns $FF when no device responds

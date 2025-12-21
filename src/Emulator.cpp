@@ -87,9 +87,15 @@ void Emulator::WireComponents() {
         [this](uint16_t, uint8_t val) { interrupts->WriteIE(val); }
     );
     
-    // === Connect DMA active check (for OAM conflict resolution) ===
-    // Use IsBlockingOAM() per SameBoy: OAM blocked only after startup and first byte
-    bus->ConnectDMA([this]() { return dma->IsBlockingOAM(); });
+    // === Connect DMA (for bus conflict and OAM blocking) ===
+    // - IsActive: For bus conflict detection
+    // - IsBlockingOAM: For OAM blocking (stricter timing, blocks during startup)
+    // - GetSourceAddress: For determining which bus DMA is using
+    bus->ConnectDMA(
+        [this]() { return dma->IsActive(); },
+        [this]() { return dma->IsBlockingOAM(); },
+        [this]() { return dma->GetSourceAddress(); }
+    );
     
     // === Connect CPU to Bus (wire the address/data lines) ===
     cpu->ConnectBus(

@@ -88,12 +88,8 @@ void CPU::RequestInterrupt(uint8_t bit) {
 }
 
 void CPU::HandleInterrupts() {
-    // Process scheduled IME enable first (EI delay)
-    // This is important for EI+HALT behavior
-    if (ime_scheduled) {
-        ime = true;
-        ime_scheduled = false;
-    }
+    // NOTE: ime_scheduled is processed in FetchByte() per GBCTR spec
+    // IME=1 must happen AT M2/M1 (during fetch), not before
     
     // Read IF and IE from bus (hardware accurate)
     uint8_t if_reg = bus_read ? bus_read(0xFF0F) : 0;
@@ -138,6 +134,13 @@ void CPU::HandleInterrupts() {
 uint8_t CPU::FetchByte() {
     // SameBoy pattern: flush pending cycles BEFORE memory operation
     FlushPendingCycles();
+    
+    // Per GBCTR: EI sets IME=1 at M2/M1 (during fetch of next instruction)
+    // This is the moment when the scheduled IME enable takes effect
+    if (ime_scheduled) {
+        ime = true;
+        ime_scheduled = false;
+    }
     
     address_bus = pc++;
     read_signal = true;

@@ -115,7 +115,11 @@ public:
     void WriteByte(uint16_t addr, uint8_t value);
     
     // Internal delay - accumulates pending cycles (SameBoy pattern: no memory access)
-    void InternalDelay() { pending_cycles += 4; }
+    // Fix: Flush pending cycles FIRST to ensure 4-cycle granularity
+    void InternalDelay() { 
+        FlushPendingCycles();
+        pending_cycles = 4; // Schedule current M-cycle
+    }
     
     // Peek memory without ticking (for internal checks like HALT bug)
     uint8_t PeekByte(uint16_t addr) { return bus_read ? bus_read(addr) : 0xFF; }

@@ -1,5 +1,15 @@
 #include "Bus.hpp"
 
+// Bus types for conflict detection (per SameBoy)
+enum class BusType { EXTERNAL, VRAM, INTERNAL };
+
+static BusType GetBusForAddress(uint16_t addr) {
+    if (addr < 0x8000) return BusType::EXTERNAL;       // ROM
+    if (addr < 0xA000) return BusType::VRAM;           // VRAM
+    if (addr < 0xFE00) return BusType::EXTERNAL;       // External RAM, WRAM, Echo
+    return BusType::INTERNAL;                          // OAM, IO, HRAM, IE
+}
+
 Bus::Bus()
     : bootrom_enabled(false)
 {
@@ -11,6 +21,20 @@ void Bus::Reset() {
 }
 
 uint8_t Bus::Read(uint16_t addr) {
+    // === OAM DMA Bus Conflict Detection ===
+    // During DMA, CPU reads from the same bus as DMA source return $FF
+    // Only HRAM/IO (internal bus) are accessible during DMA
+    if (dma_active && dma_active() && dma_source && addr < 0xFE00) {
+        uint16_t source_addr = dma_source();
+        // Check if both addresses are on the same bus type
+        BusType cpu_bus = GetBusForAddress(addr);
+        BusType dma_bus = GetBusForAddress(source_addr);
+        
+        if (cpu_bus == dma_bus) {
+            return OPEN_BUS;  // Bus conflict - return $FF
+        }
+    }
+    
     // Boot ROM overlay ($0000-$00FF)
     if (bootrom_enabled && addr < 0x0100 && bootrom_read) {
         return bootrom_read(addr);
@@ -49,7 +73,7 @@ uint8_t Bus::Read(uint16_t addr) {
     // OAM ($FE00-$FE9F)
     if (addr < 0xFEA0) {
         // During OAM DMA, CPU reads from OAM return $FF
-        if (dma_active && dma_active()) {
+        if (dma_blocking_oam && dma_blocking_oam()) {
             return OPEN_BUS;
         }
         if (oam_read) return oam_read(addr);
@@ -111,6 +135,10 @@ void Bus::Write(uint16_t addr, uint8_t value) {
     
     // OAM ($FE00-$FE9F)
     if (addr < 0xFEA0) {
+        // During OAM DMA, CPU writes to OAM are blocked/ignored
+        if (dma_blocking_oam && dma_blocking_oam()) {
+            return;  // Write blocked - value is lost
+        }
         if (oam_write) oam_write(addr, value);
         return;
     }

@@ -34,11 +34,12 @@ public:
     // === DMA State (directly exposed for bus coordination) ===
     bool IsActive() const { return active; }
     
-    // SameBoy pattern: OAM is only blocked after first byte has been set up
-    // During startup and first byte (byte_index == 0), OAM is still readable
-    bool IsBlockingOAM() const { 
-        return active && !in_startup && byte_index > 0;
-    }
+    // SameBoy pattern: OAM blocked when dest != 0
+    // dest=0xFF (startup): blocked
+    // dest=0 (first byte setup): NOT blocked 
+    // dest=1-159: blocked
+    // dest=0xA0 (wind-down): blocked
+    bool IsBlockingOAM() const;
     
     // === Transfer Interface (directly exposed source/dest) ===
     // Get next source address to read from
@@ -62,10 +63,12 @@ private:
     uint8_t byte_index;         // Current byte being transferred (0-159)
     bool active;                // Transfer in progress
     bool in_startup;            // In 4-cycle startup delay
+    bool in_winding_down;       // SameBoy dest=0xA0 phase: DMA active but complete
     
     // === Transfer Timing (directly exposed internal counters) ===
     uint8_t cycle_counter;      // T-cycles within current byte transfer
     uint8_t transfer_data;      // Data being transferred
+    uint16_t total_cycles_tracked;  // Debug: total cycles DMA was active
     
     // === Constants (directly expose the DMA timing) ===
     static constexpr uint8_t BYTES_TO_TRANSFER = 160;
