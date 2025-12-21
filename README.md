@@ -20,6 +20,9 @@ This emulator aims to match real DMG hardware behavior exactly:
 
 | Test Suite | Status |
 |------------|--------|
+| **Blargg cpu_instrs** | 11/11 ✅ |
+| **Blargg instr_timing** | PASSED ✅ |
+| **DMG ACID2** | PASSED ✅ |
 | **MBC1** | 13/13 ✅ |
 | **MBC2** | 7/7 ✅ |
 | **MBC5** | 8/8 ✅ |
@@ -93,7 +96,7 @@ make -j$(nproc)
 ```
 src/
 ├── cpu/        # SM83 CPU with T-cycle timing
-├── ppu/        # Pixel Processing Unit (state machine)
+├── ppu/        # Pixel FIFO renderer (DMG ACID2 passing)
 ├── apu/        # Audio Processing Unit (4 channels)
 ├── memory/     # Bus, DMA, and memory map
 ├── cartridge/  # MBC implementations

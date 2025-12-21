@@ -4,21 +4,22 @@ PPU::PPU() {
     Reset();
 }
 
-void PPU::Reset() {
-    mode = OAM_SCAN;
+void PPU::Reset(bool bootRomEnabled) {
+    mode = bootRomEnabled ? HBLANK : OAM_SCAN;  // LCD off starts in mode 0
     dot_counter = 0;
     ly = 0;
-    window_line = 0;
+    window_line = -1;
     window_active = false;
     window_triggered = false;
     
-    // Registers
-    lcdc = 0x91;
+    // Registers - per SameBoy: boot ROM starts with LCD off (LCDC=0)
+    // Without boot ROM, start with post-boot state (LCDC=$91)
+    lcdc = bootRomEnabled ? 0x00 : 0x91;
     stat = 0;
     scy = 0;
     scx = 0;
     lyc = 0;
-    bgp = 0xFC;
+    bgp = bootRomEnabled ? 0x00 : 0xFC;
     obp0 = 0xFF;
     obp1 = 0xFF;
     wy = 0;
@@ -34,6 +35,7 @@ void PPU::Reset() {
     stat_irq = false;
     frame_complete = false;
     stat_line = false;
+    mode_for_interrupt = 2;  // Start in Mode 2
     
     // FIFOs
     ClearFIFOs();
@@ -86,6 +88,24 @@ void PPU::Step(uint8_t cycles) {
 // === Mode 2: OAM Scan (80 dots: 0-79) ===
 // Per Pan Docs: scans OAM for sprites on current line
 void PPU::StepOAMScan() {
+    // Per SameBoy display.c lines 1778-1792:
+    // Mode 2 interrupt fires 1 T-cycle BEFORE STAT mode bits change
+    // At dot 0: mode_for_interrupt=2, but STAT mode bits still 0
+    // At dot 1: STAT mode bits become 2
+    if (dot_counter == 0 && ly != 0) {
+        // Fire Mode 2 interrupt while STAT mode bits still show 0 (HBLANK)
+        // The 'mode' variable already is OAM_SCAN internally, but we'll handle
+        // the STAT read to return 0 at dot 0 via mode_for_interrupt
+        mode_for_interrupt = 2;
+        CheckStatInterrupt();
+        
+        // Per SameBoy display.c line 517-519:
+        // Set wy_triggered when LY == WY (this persists for rest of frame)
+        if (IsWindowEnabled() && ly == wy) {
+            window_triggered = true;
+        }
+    }
+    
     // Check 1 OAM entry every 2 dots
     if ((dot_counter & 1) == 0 && dot_counter < 80) {
         uint8_t entry = dot_counter / 2;
@@ -96,20 +116,37 @@ void PPU::StepOAMScan() {
             
             // Sprite Y is screen Y + 16
             if (ly + 16 >= y && ly + 16 < y + height) {
-                scanline_sprites[sprite_count++] = {
+                // Per SameBoy display.c lines 637-649:
+                // Insert-sort by X coordinate. Higher X comes first, lower X comes last.
+                // This ensures lower X sprites are processed later and win when overlapping.
+                // For same X, later OAM entries come after earlier ones (OAM order preserved).
+                uint8_t j = 0;
+                for (; j < sprite_count; j++) {
+                    // Find insertion point: stop when we find a sprite with X <= this sprite's X
+                    // This places higher X sprites before lower X sprites
+                    if (scanline_sprites[j].x <= x) break;
+                }
+                // Shift sprites to make room for insertion
+                for (uint8_t k = sprite_count; k > j; k--) {
+                    scanline_sprites[k] = scanline_sprites[k - 1];
+                }
+                // Insert the new sprite
+                scanline_sprites[j] = {
                     y, x,
                     oam[entry * 4 + 2],
                     oam[entry * 4 + 3],
                     entry
                 };
+                sprite_count++;
             }
         }
     }
     
-    // Transition at dot 80
-    if (dot_counter == 79) {
+    // Transition to Mode 3 at dot 84 per SameBoy display.c line 1824:
+    // cycles_for_line = MODE2_LENGTH + 4 = 80 + 4 = 84
+    if (dot_counter == 83) {
         mode = PIXEL_TRANSFER;
-        // Note: mode bits are stored in 'mode' variable, not in 'stat'
+        mode_for_interrupt = 3;  // Per SameBoy: no mode-based interrupt during Mode 3
         
         InitFetcher();
         CheckStatInterrupt();
@@ -120,12 +157,14 @@ void PPU::StepOAMScan() {
 // Per Pan Docs: Fetcher runs at 2 dots per step, FIFO pops at 1 pixel per dot
 void PPU::StepPixelTransfer() {
     // Check for sprite at current X (before popping)
+    // Per SameBoy: process sprites from end of array (lowest X) first
+    // Array is sorted with highest X first, so iterate backwards to get lowest X
     if (!fetching_sprite && IsSpritesEnabled()) {
-        for (int i = 0; i < sprite_count; i++) {
+        for (int i = sprite_count - 1; i >= 0; i--) {
             if (scanline_sprites[i].x != 0 && 
                 lcd_x + 8 >= scanline_sprites[i].x && 
                 lcd_x + 8 < scanline_sprites[i].x + 8) {
-                // Start sprite fetch
+                // Start sprite fetch for this sprite
                 sprite_index = i;
                 fetching_sprite = true;
                 fetcher_dots = 0;
@@ -147,21 +186,25 @@ void PPU::StepPixelTransfer() {
         AdvanceFetcher();
     }
     
-    // Pop pixel from FIFO if we have enough (need 8+ for mixing)
-    if (!fetching_sprite && bg_fifo_size >= 8) {
+    // Pop pixel from FIFO if it has data
+    // Per Pan Docs: LCD_X only advances if background FIFO has data
+    if (!fetching_sprite && bg_fifo_size > 0) {
         // Discard SCX % 8 pixels at start of line
         if (discard_pixels > 0) {
             PopBGPixel();
             if (sprite_fifo_size > 0) PopSpritePixel();
             discard_pixels--;
         } else {
-            RenderPixel();
-            lcd_x++;
-            
-            if (lcd_x >= 160) {
-                mode = HBLANK;
-                // Note: mode bits are stored in 'mode' variable, not in 'stat'
-                CheckStatInterrupt();
+            // Only increment lcd_x if a pixel was actually rendered
+            // Window trigger returns false and doesn't render - we'll render at same lcd_x once window data is ready
+            if (RenderPixel()) {
+                lcd_x++;
+                
+                if (lcd_x >= 160) {
+                    mode = HBLANK;
+                    mode_for_interrupt = 0;  // Per SameBoy: Mode 0 interrupt check
+                    CheckStatInterrupt();
+                }
             }
         }
     }
@@ -170,7 +213,7 @@ void PPU::StepPixelTransfer() {
 // === Mode 0: HBlank ===
 void PPU::StepHBlank() {
     if (dot_counter == 455) {
-        if (window_active) window_line++;
+        // Note: window_line is incremented when window TRIGGERS (in RenderPixel), not here
         
         ly++;
         stat = (stat & ~0x04) | ((ly == lyc) ? 0x04 : 0);
@@ -184,18 +227,21 @@ void PPU::StepHBlank() {
             }
             
             mode = VBLANK;
-            // Note: mode bits stored in 'mode' variable, not in 'stat'
+            mode_for_interrupt = 1;  // Per SameBoy: Mode 1 interrupt check
             vblank_irq = true;
             frame_complete = true;
+            CheckStatInterrupt();  // Mode 1 interrupt at VBlank entry
         } else {
+            // Per SameBoy: Mode 2 STAT interrupt fires at dot 0 with STAT mode bits still 0
+            // Internal mode is OAM_SCAN so we run StepOAMScan, but STAT read will
+            // return special value at dot 0 (handled in ReadRegister)
             mode = OAM_SCAN;
-            // Note: mode bits stored in 'mode' variable, not in 'stat'
+            mode_for_interrupt = -1;  // Wait for dot 0 to set mode_for_interrupt=2
             sprite_count = 0;
             window_active = false;
         }
         
         dot_counter = (uint16_t)-1;
-        CheckStatInterrupt();
     }
 }
 
@@ -208,8 +254,8 @@ void PPU::StepVBlank() {
         if (ly > 153) {
             ly = 0;
             mode = OAM_SCAN;
-            // Note: mode bits stored in 'mode' variable, not in 'stat'
-            window_line = 0;
+            mode_for_interrupt = 2;  // Per SameBoy: Mode 2 interrupt check
+            window_line = -1;  // Per SameBoy: starts at -1, incremented when window triggers
             window_triggered = false;
             sprite_count = 0;
             window_active = false;
@@ -223,6 +269,10 @@ void PPU::StepVBlank() {
 // === Fetcher ===
 void PPU::InitFetcher() {
     ClearFIFOs();
+    
+    // Note: SameBoy pre-fills with 8 junk pixels but uses position_in_line=-16
+    // to track when actual rendering starts. We don't have that, so skip prefill.
+    
     fetcher_step = FetcherStep::GET_TILE;
     fetcher_dots = 0;
     fetcher_x = 0;
@@ -328,26 +378,34 @@ void PPU::FetchSprite() {
     uint8_t lo = vram[tile * 16 + line * 2];
     uint8_t hi = vram[tile * 16 + line * 2 + 1];
     
-    // Mix into sprite FIFO
-    for (int bit = 7; bit >= 0; bit--) {
-        int actual_bit = (spr.flags & 0x20) ? (7 - bit) : bit;  // X-flip
-        uint8_t color = ((hi >> actual_bit) & 1) << 1 | ((lo >> actual_bit) & 1);
+    // Per SameBoy display.c lines 127-130: ensure FIFO has 8 transparent slots
+    while (sprite_fifo_size < 8) {
+        PushSpritePixel(0, 0, 0, 0);  // Push transparent pixel
+    }
+    
+    // Per SameBoy lines 132-145: overlay sprite pixels
+    // flip_xor: when X-flip is set, XOR position with 7 to reverse order
+    uint8_t flip_xor = (spr.flags & 0x20) ? 0 : 7;
+    
+    for (int i = 7; i >= 0; i--) {
+        // Always read MSB (bit 7), shift after each read (like SameBoy)
+        uint8_t color = ((hi >> 7) & 1) << 1 | ((lo >> 7) & 1);
+        lo <<= 1;
+        hi <<= 1;
         
-        if (color != 0) {
-            uint8_t pos = 7 - bit;
-            if (pos < sprite_fifo_size) {
-                // Merge - keep existing if non-transparent (X priority)
-                if (sprite_fifo[(sprite_fifo_head + pos) & 0xF].color == 0) {
-                    sprite_fifo[(sprite_fifo_head + pos) & 0xF] = {
-                        color,
-                        (uint8_t)((spr.flags >> 4) & 1),
-                        (uint8_t)((spr.flags >> 7) & 1),
-                        spr.oam_index
-                    };
-                }
-            } else {
-                PushSpritePixel(color, (spr.flags >> 4) & 1, (spr.flags >> 7) & 1, spr.oam_index);
-            }
+        // Target position: XOR with flip_xor for X-flip
+        uint8_t pos = i ^ flip_xor;
+        FIFOPixel* target = &sprite_fifo[(sprite_fifo_head + pos) & 0xF];
+        
+        // Only overlay if pixel is non-transparent AND target is transparent
+        // Per SameBoy line 137: for DMG, all sprites have priority=0, so only
+        // transparent pixels can be overwritten.
+        // This gives X-coordinate priority: sprites processed first (lower X) keep their pixels.
+        if (color != 0 && target->color == 0) {
+            target->color = color;
+            target->palette = (spr.flags >> 4) & 1;
+            target->bg_priority = (spr.flags >> 7) & 1;
+            target->oam_index = spr.oam_index;
         }
     }
 }
@@ -386,32 +444,42 @@ PPU::FIFOPixel PPU::PopSpritePixel() {
     return p;
 }
 
-void PPU::RenderPixel() {
-    FIFOPixel bg = PopBGPixel();
-    FIFOPixel obj = {0, 0, 0, 0};
-    if (sprite_fifo_size > 0) obj = PopSpritePixel();
-    
-    // Window trigger check
-    if (!fetcher_window && IsWindowEnabled() && ly >= wy && lcd_x + 7 >= wx) {
+bool PPU::RenderPixel() {
+    // Window trigger check - must be BEFORE FIFO pops
+    // Per SameBoy display.c line 1897: window activates when WX == position_in_line + 7
+    // Per SameBoy: requires window_triggered (wy_triggered) to be set
+    // Per reference PPU line 1189: WX must be < 166 for window to trigger
+    if (!fetcher_window && IsWindowEnabled() && window_triggered && 
+        wx < 166 && lcd_x + 7 == wx) {
+        // Per reference PPU line 1191: Increment window_line when window triggers
+        window_line++;
         fetcher_window = true;
         window_active = true;
-        ClearFIFOs();
+        // Per SameBoy line 1915: only clear BG FIFO, NOT sprite FIFO
+        bg_fifo_head = bg_fifo_size = 0;
         fetcher_step = FetcherStep::GET_TILE;
         fetcher_dots = 0;
         fetcher_x = 0;
-        return;
+        return false;  // Don't increment lcd_x - no pixel rendered yet
     }
+    
+    FIFOPixel bg = PopBGPixel();
+    FIFOPixel obj = {0, 0, 0, 0};
+    if (sprite_fifo_size > 0) obj = PopSpritePixel();
     
     uint8_t color;
     if (obj.color != 0 && IsSpritesEnabled() && (!obj.bg_priority || bg.color == 0)) {
         color = ((obj.palette ? obp1 : obp0) >> (obj.color * 2)) & 3;
     } else {
-        color = IsBGEnabled() ? ((bgp >> (bg.color * 2)) & 3) : 0;
+        // Per SameBoy display.c line 1243:
+        // When BG disabled on DMG, use color 0 from BGP palette, not raw 0
+        color = IsBGEnabled() ? ((bgp >> (bg.color * 2)) & 3) : (bgp & 3);
     }
     
     if (lcd_x < 160 && ly < 144) {
         framebuffer[ly * 160 + lcd_x] = color;
     }
+    return true;  // Pixel rendered
 }
 
 // === STAT Interrupt ===
@@ -431,14 +499,21 @@ void PPU::CheckStatInterrupt() {
     }
     
     // Per SameBoy GB_STAT_update lines 545-555:
-    // Mode-based interrupts only for modes 0, 1, 2 (not 3)
-    bool line = ((stat & 0x40) && lyc_match) ||             // LYC=LY interrupt
-                ((stat & 0x20) && mode == OAM_SCAN) ||      // Mode 2 interrupt  
-                ((stat & 0x10) && mode == VBLANK) ||        // Mode 1 interrupt
-                ((stat & 0x08) && mode == HBLANK);          // Mode 0 interrupt
+    // Use mode_for_interrupt (not mode) for interrupt evaluation
+    // -1 or 3 = no mode-based interrupt
+    bool line = ((stat & 0x40) && lyc_match);  // LYC=LY interrupt
+    
+    switch (mode_for_interrupt) {
+        case 0: line |= (stat & 0x08) != 0; break;  // Mode 0 (HBlank)
+        case 1: line |= (stat & 0x10) != 0; break;  // Mode 1 (VBlank)
+        case 2: line |= (stat & 0x20) != 0; break;  // Mode 2 (OAM)
+        // default: -1 or 3, no mode-based interrupt
+    }
     
     // Rising edge detection - only trigger on LOW→HIGH transition
-    if (line && !stat_line) stat_irq = true;
+    if (line && !stat_line) {
+        stat_irq = true;
+    }
     stat_line = line;
 }
 
@@ -446,10 +521,16 @@ void PPU::CheckStatInterrupt() {
 uint8_t PPU::ReadRegister(uint16_t addr) const {
     switch (addr) {
         case 0xFF40: return lcdc;
-        case 0xFF41:
-            // Per SameBoy: STAT is stored with LY=LYC bit, not computed dynamically
-            // This allows the bit to be "frozen" when LCD is off
-            return stat | mode | 0x80;
+        case 0xFF41: {
+            // Per SameBoy display.c lines 1778-1792:
+            // Mode 2 STAT bits appear 1 T-cycle after interrupt fires
+            // At dot 0, return mode 0 (HBLANK) even though internal mode is OAM_SCAN
+            uint8_t stat_mode = mode;
+            if (mode == OAM_SCAN && dot_counter == 0 && ly != 0) {
+                stat_mode = HBLANK;  // Return mode 0 at dot 0
+            }
+            return stat | stat_mode | 0x80;
+        }
         case 0xFF42: return scy;
         case 0xFF43: return scx;
         case 0xFF44: return ly;

@@ -183,7 +183,7 @@ gb-emu3/
 | Component | Header | Implementation | Accuracy |
 |-----------|--------|----------------|----------|
 | CPU (SM83) | ✅ | ✅ Complete | T-cycle accurate, 20T interrupt dispatch |
-| PPU | ✅ | ⚠️ Partial | BG only (no sprites/window/FIFO) |
+| PPU | ✅ | ✅ Complete | DMG ACID2 passing, pixel FIFO, X-priority |
 | APU | ✅ | ✅ Complete | Frame sequencer, DIV-clocked |
 | Timer | ✅ | ✅ Complete | Hardware accurate, obscure behavior |
 | Joypad | ✅ | ✅ Complete | Matrix scan, interrupt |
@@ -279,18 +279,20 @@ HALT bug correctly implemented (PC fails to increment when IME=0 with pending in
 
 ## Known Limitations
 
-### PPU - Pixel FIFO Renderer
+### PPU - Pixel FIFO Renderer (DMG ACID2 Passing)
 
-The PPU uses a pixel FIFO renderer with proper state machine:
+The PPU uses a hardware-accurate pixel FIFO renderer:
 
 | Feature | Status |
 |---------|--------|
 | Background tiles | ✅ Works |
 | Sprites (8x8, 8x16) | ✅ Works |
-| Window layer | ✅ Works |
+| Sprite X-priority | ✅ Per SameBoy (insertion sort) |
+| Sprite X-flip | ✅ XOR-based flip per SameBoy |
+| Window layer | ✅ WX/WY trigger correct |
 | Mode state machine | ✅ Correct timing |
 | OAM scan | ✅ 10 sprite limit |
-| Mid-scanline effects | ⚠️ Partial |
+| Sprite FIFO overlay | ✅ 8 transparent slots + overlay |
 | Fine SCX scrolling | ✅ Works |
 
 ### Memory Access Timing
@@ -343,14 +345,15 @@ Works for internal clock mode only (Blargg tests). External clock mode untested.
 - [x] EI delay / DI cancellation
 - [ ] STOP low-power mode
 
-### Phase 2: PPU Enhancement
-- [ ] Sprite rendering (OAM scan + pixel mixing)
-- [ ] Window layer
-- [ ] Pixel FIFO (for mid-scanline effects)
-- [ ] Variable mode 3 timing
+### Phase 2: PPU Enhancement ✅
+- [x] Sprite rendering (OAM scan + pixel mixing)
+- [x] Window layer with correct WX/WY trigger
+- [x] Pixel FIFO with sprite overlay
+- [x] DMG sprite X-priority (lower X wins)
+- [x] DMG ACID2 visual test passing
 
 ### Phase 3: Advanced Features
-- [ ] DMA bus conflicts
+- [x] DMA bus conflicts
 - [ ] CGB support (double speed, VRAM banking)
 - [ ] HDMA (HBlank DMA)
 - [ ] SGB support

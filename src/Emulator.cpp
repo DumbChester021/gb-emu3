@@ -243,7 +243,7 @@ void Emulator::Reset() {
     // Reset CPU with proper boot ROM state
     // If boot ROM is enabled, PC starts at 0; otherwise PC starts at $0100
     cpu->Reset(bootrom->IsEnabled());
-    ppu->Reset();
+    ppu->Reset(bootrom->IsEnabled());  // LCD disabled when boot ROM runs
     apu->Reset();
     timer->Reset();
     joypad->Reset();

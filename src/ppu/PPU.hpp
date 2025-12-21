@@ -23,7 +23,7 @@ class PPU {
 public:
     PPU();
     
-    void Reset();
+    void Reset(bool bootRomEnabled = false);
     
     // Advance PPU by specified T-cycles (1 dot = 1 T-cycle)
     void Step(uint8_t cycles);
@@ -78,10 +78,10 @@ private:
     
     // === Pixel FIFO Entry ===
     struct FIFOPixel {
-        uint8_t color : 2;      // 0-3
-        uint8_t palette : 3;    // DMG: 0-1, CGB: 0-7
-        uint8_t bg_priority : 1; // OBJ-to-BG priority
-        uint8_t sprite_priority : 1; // For sprite ordering
+        uint8_t color;          // 0-3 (2-bit color value)
+        uint8_t palette;        // DMG: 0-1 (OBP0/OBP1), CGB: 0-7
+        uint8_t bg_priority;    // OBJ-to-BG priority (1=behind BG colors 1-3)
+        uint8_t oam_index;      // For DMG X-priority: lower X or earlier OAM wins
     };
     
     // === Sprite Entry (OAM scan result) ===
@@ -97,7 +97,7 @@ private:
     Mode mode;
     uint16_t dot_counter;       // Dots within current scanline (0-455)
     uint8_t ly;                 // Current scanline (0-153)
-    uint8_t window_line;        // Window internal line counter
+    int16_t window_line;        // Window internal line counter (starts at -1)
     bool window_active;         // Window triggered on current scanline
     bool window_triggered;      // Window was triggered this frame
     
@@ -124,7 +124,9 @@ private:
     bool vblank_irq;
     bool stat_irq;
     bool frame_complete;
-    bool stat_line;  // Previous STAT interrupt line state
+    bool stat_line;          // Previous STAT interrupt line state
+    int8_t mode_for_interrupt;  // Per SameBoy: separate from actual mode for STAT timing
+                                // -1 = no mode-based interrupt, 0-2 = check this mode
     
     // === Pixel FIFO (16 entries each) ===
     std::array<FIFOPixel, 16> bg_fifo;
@@ -173,7 +175,7 @@ private:
     FIFOPixel PopBGPixel();
     void PushSpritePixel(uint8_t color, uint8_t palette, bool bg_priority, uint8_t oam_idx);
     FIFOPixel PopSpritePixel();
-    void RenderPixel();
+    bool RenderPixel();  // Returns true if pixel rendered, false if window triggered
     
     // === Sprite Operations ===
     void FetchSprite();
