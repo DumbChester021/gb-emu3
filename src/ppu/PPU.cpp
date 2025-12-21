@@ -11,6 +11,7 @@ void PPU::Reset(bool bootRomEnabled) {
     window_line = -1;
     window_active = false;
     window_triggered = false;
+    lcd_just_enabled = false;
     
     // Registers - per SameBoy: boot ROM starts with LCD off (LCDC=0)
     // Without boot ROM, start with post-boot state (LCDC=$91)
@@ -227,6 +228,20 @@ void PPU::StepPixelTransfer() {
 
 // === Mode 0: HBlank ===
 void PPU::StepHBlank() {
+    // Per SameBoy display.c lines 1664-1714:
+    // Line 0 after LCD enable starts in Mode 0, then goes directly to Mode 3
+    // Timing: ~76 dots in Mode 0, then Mode 3 at ~dot 78
+    if (lcd_just_enabled && ly == 0) {
+        // After ~78 dots (MODE2_LENGTH - 4 + 2), transition to Mode 3
+        if (dot_counter == 77) {
+            mode = PIXEL_TRANSFER;
+            mode_for_interrupt = 3;
+            InitFetcher();
+            lcd_just_enabled = false;  // Only affects Line 0
+        }
+        return;  // Don't do normal HBlank processing during special Line 0
+    }
+    
     if (dot_counter == 455) {
         // Note: window_line is incremented when window TRIGGERS (in RenderPixel), not here
         
@@ -584,8 +599,16 @@ void PPU::WriteRegister(uint16_t addr, uint8_t value) {
             }
             lcdc = value;
             if ((value & 0x80) && !was_enabled) {
-                // LCD turning ON - per SameBoy, the comparison clock starts
-                // and LY=LYC comparison is immediately updated
+                // LCD turning ON - per SameBoy display.c lines 1664-1714:
+                // Line 0 after LCD enable has special behavior:
+                // - Starts in Mode 0 (not Mode 2)
+                // - Skips OAM scan, goes directly to Mode 3
+                // - Has 2-cycle timing offset
+                lcd_just_enabled = true;
+                ly = 0;
+                dot_counter = 0;
+                mode = HBLANK;  // Start in Mode 0
+                mode_for_interrupt = -1;  // No interrupt initially
                 CheckStatInterrupt();
             }
             break;

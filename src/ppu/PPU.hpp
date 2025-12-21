@@ -101,6 +101,7 @@ private:
     int16_t window_line;        // Window internal line counter (starts at -1)
     bool window_active;         // Window triggered on current scanline
     bool window_triggered;      // Window was triggered this frame
+    bool lcd_just_enabled;      // Per SameBoy: Line 0 after LCD enable has special timing
     
     // === Registers ===
     uint8_t lcdc;   // $FF40 - LCD Control

@@ -186,7 +186,7 @@ gb-emu3/
 | PPU | ✅ | ✅ Complete | DMG ACID2 passing, pixel FIFO, X-priority |
 | APU | ✅ | ✅ Complete | Frame sequencer, DIV-clocked |
 | Timer | ✅ | ✅ Complete | Hardware accurate, obscure behavior |
-| Joypad | ✅ | ✅ Complete | Matrix scan, interrupt |
+| Joypad | ✅ | ✅ Complete | Matrix scan, interrupt, opposing key prevention |
 | Serial | ✅ | ✅ Complete | Internal clock |
 | Bus | ✅ | ✅ Complete | Full routing |
 | Memory | ✅ | ✅ Complete | WRAM/HRAM |

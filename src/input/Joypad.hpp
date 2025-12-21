@@ -55,6 +55,6 @@ private:
     // === Output Signals (directly exposed output pin) ===
     bool interrupt_requested;
     
-    // Previous state for edge detection
-    uint8_t previous_state;
+    // Helper to calculate P10-P13 state based on current select and buttons
+    uint8_t GetP10_P13_State() const;
 };
