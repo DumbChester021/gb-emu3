@@ -39,8 +39,9 @@ public:
     void WriteIF(uint8_t value) { interrupt_flag = value & 0x1F; }
     
     // === IE Register Interface (directly exposed $FFFF) ===
+    // Note: Unlike IF, ALL 8 bits of IE are R/W (per Mooneye unused_hwio test)
     uint8_t ReadIE() const { return interrupt_enable; }
-    void WriteIE(uint8_t value) { interrupt_enable = value & 0x1F; }
+    void WriteIE(uint8_t value) { interrupt_enable = value; }
     
     // === Request Interrupt (directly exposed input from peripheral) ===
     void RequestInterrupt(uint8_t bit) { interrupt_flag |= bit; }

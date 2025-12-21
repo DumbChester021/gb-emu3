@@ -23,8 +23,12 @@ This emulator aims to match real DMG hardware behavior exactly:
 | **MBC1** | 13/13 ✅ |
 | **MBC2** | 7/7 ✅ |
 | **MBC5** | 8/8 ✅ |
-| **Timer** | 11/13 |
+| **Timer** | 13/13 ✅ |
+| **Bits** | 3/3 ✅ |
 | **Halt** | 4/4 ✅ |
+| **EI/DI** | 4/4 ✅ |
+| **Call/Ret Timing** | 8/8 ✅ |
+| **Total Mooneye** | **76/89** |
 
 ---
 

@@ -257,20 +257,59 @@ HALT bug correctly implemented (PC fails to increment when IME=0 with pending in
 
 ---
 
+## Mooneye Test Results
+
+**Current Status: 76/89 passing**
+
+| Category | Passed | Total |
+|----------|--------|-------|
+| MBC1 | 13 | 13 ✅ |
+| MBC2 | 7 | 7 ✅ |
+| MBC5 | 8 | 8 ✅ |
+| Timer | 13 | 13 ✅ |
+| Bits | 3 | 3 ✅ |
+| Halt | 4 | 4 ✅ |
+| EI/DI | 4 | 4 ✅ |
+| Call/Ret Timing | 8 | 8 ✅ |
+| PPU | 2 | 12 |
+| OAM DMA | 3 | 5 |
+| Interrupts | 1 | 2 |
+
+---
+
 ## Known Limitations
 
-### PPU - Scanline Renderer (Not Pixel FIFO)
+### PPU - Pixel FIFO Renderer
 
-The PPU uses a simplified scanline renderer instead of the hardware-accurate pixel FIFO:
+The PPU uses a pixel FIFO renderer with proper state machine:
 
 | Feature | Status |
 |---------|--------|
 | Background tiles | ✅ Works |
+| Sprites (8x8, 8x16) | ✅ Works |
+| Window layer | ✅ Works |
 | Mode state machine | ✅ Correct timing |
-| Mid-scanline effects | ❌ Not supported |
-| Variable mode 3 timing | ❌ Not supported |
-| Sprites | ❌ Not implemented |
-| Window layer | ❌ Not implemented |
+| OAM scan | ✅ 10 sprite limit |
+| Mid-scanline effects | ⚠️ Partial |
+| Fine SCX scrolling | ✅ Works |
+
+### Memory Access Timing
+
+| Feature | Status |
+|---------|--------|
+| OAM blocked in Mode 2/3 | ✅ Per Pan Docs |
+| VRAM blocked in Mode 3 | ✅ Per Pan Docs |
+| OAM/VRAM accessible when LCD off | ✅ Per Pan Docs |
+| OAM DMA bus conflicts | ✅ Per SameBoy |
+
+### I/O Register Accuracy
+
+| Register | Unused Bits | Status |
+|----------|-------------|--------|
+| IF ($FF0F) | Bits 7-5 read as 1 | ✅ Per Pan Docs |
+| IE ($FFFF) | All 8 bits R/W | ✅ Per SameBoy |
+| STAT ($FF41) | Bit 7 reads as 1 | ✅ Per Pan Docs |
+| P1 ($FF00) | Bits 7-6 read as 1 | ✅ Per Pan Docs |
 
 ### STOP Instruction
 
@@ -286,7 +325,7 @@ Works for internal clock mode only (Blargg tests). External clock mode untested.
 
 | Metric | Value |
 |--------|-------|
-| TODOs | 2 (STOP, pixel FIFO) |
+| TODOs | 1 (STOP mode) |
 | HACKs | 0 |
 | FIXMEs | 0 |
 | Stubs | 0 |

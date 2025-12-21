@@ -112,22 +112,23 @@ void Emulator::WireComponents() {
  * It routes register accesses to the appropriate peripheral.
  */
 uint8_t Emulator::ReadIO(uint16_t addr) {
+    uint8_t result;
     switch (addr) {
         // Joypad
-        case 0xFF00: return joypad->ReadRegister();
+        case 0xFF00: result = joypad->ReadRegister(); break;
         
         // Serial
         case 0xFF01: 
-        case 0xFF02: return serial->ReadRegister(addr);
+        case 0xFF02: result = serial->ReadRegister(addr); break;
         
         // Timer
         case 0xFF04: 
         case 0xFF05: 
         case 0xFF06: 
-        case 0xFF07: return timer->ReadRegister(addr);
+        case 0xFF07: result = timer->ReadRegister(addr); break;
         
         // Interrupt Flag
-        case 0xFF0F: return interrupts->ReadIF();
+        case 0xFF0F: result = interrupts->ReadIF(); break;
         
         // APU
         case 0xFF10: case 0xFF11: case 0xFF12: case 0xFF13: case 0xFF14:  // CH1
@@ -135,31 +136,33 @@ uint8_t Emulator::ReadIO(uint16_t addr) {
         case 0xFF1A: case 0xFF1B: case 0xFF1C: case 0xFF1D: case 0xFF1E:  // CH3
         case 0xFF20: case 0xFF21: case 0xFF22: case 0xFF23:               // CH4
         case 0xFF24: case 0xFF25: case 0xFF26:                            // Control
-            return apu->ReadRegister(addr);
+            result = apu->ReadRegister(addr); break;
         
         // Wave RAM
         case 0xFF30: case 0xFF31: case 0xFF32: case 0xFF33:
         case 0xFF34: case 0xFF35: case 0xFF36: case 0xFF37:
         case 0xFF38: case 0xFF39: case 0xFF3A: case 0xFF3B:
         case 0xFF3C: case 0xFF3D: case 0xFF3E: case 0xFF3F:
-            return apu->ReadWaveRAM(addr - 0xFF30);
+            result = apu->ReadWaveRAM(addr - 0xFF30); break;
         
         // PPU Registers
         case 0xFF40: case 0xFF41: case 0xFF42: case 0xFF43:
         case 0xFF44: case 0xFF45: case 0xFF47: case 0xFF48:
         case 0xFF49: case 0xFF4A: case 0xFF4B:
-            return ppu->ReadRegister(addr);
+            result = ppu->ReadRegister(addr); break;
         
         // DMA Register
-        case 0xFF46: return dma->ReadRegister();
+        case 0xFF46: result = dma->ReadRegister(); break;
         
         // Boot ROM disable
-        case 0xFF50: return bootrom->IsEnabled() ? 0x00 : 0xFF;
+        case 0xFF50: result = bootrom->IsEnabled() ? 0x00 : 0xFF; break;
         
         default:
             // Unmapped I/O returns $FF
-            return 0xFF;
+            result = 0xFF; break;
     }
+    
+    return result;
 }
 
 void Emulator::WriteIO(uint16_t addr, uint8_t value) {

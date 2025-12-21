@@ -458,19 +458,33 @@ void PPU::WriteRegister(uint16_t addr, uint8_t value) {
 
 // === VRAM/OAM Access ===
 uint8_t PPU::ReadVRAM(uint16_t addr) const {
-    return mode != PIXEL_TRANSFER ? vram[addr - 0x8000] : 0xFF;
+    // Per Pan Docs: VRAM accessible except during Mode 3, or when LCD is OFF
+    if (!IsLCDEnabled() || mode != PIXEL_TRANSFER) {
+        return vram[addr - 0x8000];
+    }
+    return 0xFF;
 }
 
 void PPU::WriteVRAM(uint16_t addr, uint8_t value) {
-    if (mode != PIXEL_TRANSFER) vram[addr - 0x8000] = value;
+    // Per Pan Docs: VRAM accessible except during Mode 3, or when LCD is OFF
+    if (!IsLCDEnabled() || mode != PIXEL_TRANSFER) {
+        vram[addr - 0x8000] = value;
+    }
 }
 
 uint8_t PPU::ReadOAM(uint16_t addr) const {
-    return (mode == HBLANK || mode == VBLANK) ? oam[addr - 0xFE00] : 0xFF;
+    // Per Pan Docs: OAM accessible during HBlank, VBlank, or when LCD is OFF
+    if (!IsLCDEnabled() || mode == HBLANK || mode == VBLANK) {
+        return oam[addr - 0xFE00];
+    }
+    return 0xFF;
 }
 
 void PPU::WriteOAM(uint16_t addr, uint8_t value) {
-    if (mode == HBLANK || mode == VBLANK) oam[addr - 0xFE00] = value;
+    // Per Pan Docs: OAM accessible during HBlank, VBlank, or when LCD is OFF
+    if (!IsLCDEnabled() || mode == HBLANK || mode == VBLANK) {
+        oam[addr - 0xFE00] = value;
+    }
 }
 
 void PPU::DMAWriteOAM(uint8_t index, uint8_t value) {
