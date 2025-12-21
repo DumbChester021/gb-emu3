@@ -176,6 +176,13 @@ void PPU::StepHBlank() {
         stat = (stat & ~0x04) | ((ly == lyc) ? 0x04 : 0);
         
         if (ly == 144) {
+            // Per SameBoy display.c lines 2160-2162, 2177-2178:
+            // At VBlank entry, Mode 2 interrupt (bit 5) also fires if enabled
+            // This is a DMG quirk where line 144 triggers the "OAM STAT interrupt"
+            if ((stat & 0x20) && !stat_line) {
+                stat_irq = true;
+            }
+            
             mode = VBLANK;
             // Note: mode bits stored in 'mode' variable, not in 'stat'
             vblank_irq = true;
