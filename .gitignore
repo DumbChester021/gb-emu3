@@ -1,0 +1,38 @@
+# Build output
+/build/
+*.o
+*.a
+
+# IDE/Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Copyrighted content - DO NOT COMMIT
+# Boot ROMs (Nintendo copyrighted)
+bootroms/
+
+# Test ROMs - obtain separately
+test_roms/
+
+# Reference implementations (SameBoy - MIT license, but not our code)
+reference/
+
+# Debug/temporary files
+*.pgm
+*.log
+mooneye_results.txt
+
+# Third-party documentation (may be copyrighted)
+docs/*.pdf
+docs/cycle_accurate.txt
+docs/gbctr.txt
+
+# Save files
+*.sav

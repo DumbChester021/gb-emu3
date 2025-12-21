@@ -1,0 +1,154 @@
+#include "Bus.hpp"
+
+Bus::Bus()
+    : bootrom_enabled(false)
+{
+    Reset();
+}
+
+void Bus::Reset() {
+    bootrom_enabled = false;
+}
+
+uint8_t Bus::Read(uint16_t addr) {
+    // Boot ROM overlay ($0000-$00FF)
+    if (bootrom_enabled && addr < 0x0100 && bootrom_read) {
+        return bootrom_read(addr);
+    }
+    
+    // Cartridge ROM ($0000-$7FFF)
+    if (addr < 0x8000) {
+        if (cart_read) return cart_read(addr);
+        return OPEN_BUS;
+    }
+    
+    // VRAM ($8000-$9FFF)
+    if (addr < 0xA000) {
+        if (vram_read) return vram_read(addr);
+        return OPEN_BUS;
+    }
+    
+    // External RAM ($A000-$BFFF)
+    if (addr < 0xC000) {
+        if (cart_read) return cart_read(addr);
+        return OPEN_BUS;
+    }
+    
+    // Work RAM ($C000-$DFFF)
+    if (addr < 0xE000) {
+        if (wram_read) return wram_read(addr);
+        return OPEN_BUS;
+    }
+    
+    // Echo RAM ($E000-$FDFF) - mirror of WRAM
+    if (addr < 0xFE00) {
+        if (wram_read) return wram_read(addr - 0x2000);
+        return OPEN_BUS;
+    }
+    
+    // OAM ($FE00-$FE9F)
+    if (addr < 0xFEA0) {
+        // During OAM DMA, CPU reads from OAM return $FF
+        if (dma_active && dma_active()) {
+            return OPEN_BUS;
+        }
+        if (oam_read) return oam_read(addr);
+        return OPEN_BUS;
+    }
+    
+    // Unusable ($FEA0-$FEFF)
+    if (addr < 0xFF00) {
+        return OPEN_BUS;
+    }
+    
+    // I/O Registers ($FF00-$FF7F)
+    if (addr < 0xFF80) {
+        if (io_read) return io_read(addr);
+        return OPEN_BUS;
+    }
+    
+    // HRAM ($FF80-$FFFE)
+    if (addr < 0xFFFF) {
+        if (hram_read) return hram_read(addr);
+        return OPEN_BUS;
+    }
+    
+    // IE Register ($FFFF)
+    if (ie_read) return ie_read(addr);
+    return OPEN_BUS;
+}
+
+void Bus::Write(uint16_t addr, uint8_t value) {
+    // Cartridge ROM ($0000-$7FFF) - MBC register writes
+    if (addr < 0x8000) {
+        if (cart_write) cart_write(addr, value);
+        return;
+    }
+    
+    // VRAM ($8000-$9FFF)
+    if (addr < 0xA000) {
+        if (vram_write) vram_write(addr, value);
+        return;
+    }
+    
+    // External RAM ($A000-$BFFF)
+    if (addr < 0xC000) {
+        if (cart_write) cart_write(addr, value);
+        return;
+    }
+    
+    // Work RAM ($C000-$DFFF)
+    if (addr < 0xE000) {
+        if (wram_write) wram_write(addr, value);
+        return;
+    }
+    
+    // Echo RAM ($E000-$FDFF) - mirror of WRAM
+    if (addr < 0xFE00) {
+        if (wram_write) wram_write(addr - 0x2000, value);
+        return;
+    }
+    
+    // OAM ($FE00-$FE9F)
+    if (addr < 0xFEA0) {
+        if (oam_write) oam_write(addr, value);
+        return;
+    }
+    
+    // Unusable ($FEA0-$FEFF)
+    if (addr < 0xFF00) {
+        return;
+    }
+    
+    // I/O Registers ($FF00-$FF7F)
+    if (addr < 0xFF80) {
+        if (io_write) io_write(addr, value);
+        return;
+    }
+    
+    // HRAM ($FF80-$FFFE)
+    if (addr < 0xFFFF) {
+        if (hram_write) hram_write(addr, value);
+        return;
+    }
+    
+    // IE Register ($FFFF)
+    if (ie_write) ie_write(addr, value);
+}
+
+uint8_t Bus::DMARead(uint16_t addr) {
+    // DMA bypasses some restrictions
+    if (addr < 0x8000) {
+        if (cart_read) return cart_read(addr);
+    } else if (addr < 0xA000) {
+        if (vram_read) return vram_read(addr);
+    } else if (addr < 0xC000) {
+        if (cart_read) return cart_read(addr);
+    } else if (addr < 0xE000) {
+        if (wram_read) return wram_read(addr);
+    } else if (addr < 0xFE00) {
+        if (wram_read) return wram_read(addr - 0x2000);
+    }
+    
+    return OPEN_BUS;
+}

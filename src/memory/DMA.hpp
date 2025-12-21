@@ -1,0 +1,74 @@
+#pragma once
+
+#include <cstdint>
+
+/**
+ * DMA - OAM DMA Transfer Controller
+ * 
+ * Hardware Behavior:
+ * - Transfers 160 bytes from source to OAM
+ * - Takes 160 M-cycles (640 T-cycles) to complete
+ * - CPU can only access HRAM during transfer
+ * - Does NOT know about CPU - only reads from bus and writes to OAM
+ * 
+ * Interface:
+ * - Trigger register at $FF46
+ * - Bus read access (source)
+ * - OAM write access (destination)
+ * - Active signal (blocks other OAM access)
+ */
+class DMA {
+public:
+    DMA();
+    
+    void Reset();
+    
+    // Advance DMA by specified T-cycles
+    // Returns true if a byte was transferred this cycle
+    bool Step(uint8_t cycles);
+    
+    // === Register Interface (directly exposed memory-mapped I/O at $FF46) ===
+    uint8_t ReadRegister() const;
+    void WriteRegister(uint8_t value);
+    
+    // === DMA State (directly exposed for bus coordination) ===
+    bool IsActive() const { return active; }
+    
+    // SameBoy pattern: OAM is only blocked after first byte has been set up
+    // During startup and first byte (byte_index == 0), OAM is still readable
+    bool IsBlockingOAM() const { 
+        return active && !in_startup && byte_index > 0;
+    }
+    
+    // === Transfer Interface (directly exposed source/dest) ===
+    // Get next source address to read from
+    uint16_t GetSourceAddress() const { 
+        return (static_cast<uint16_t>(source_page) << 8) | byte_index; 
+    }
+    
+    // Get next OAM index to write to
+    uint8_t GetOAMIndex() const { return byte_index; }
+    
+    // Provide the data read from bus, receive it for OAM write
+    void ProvideData(uint8_t data) { transfer_data = data; }
+    uint8_t GetTransferData() const { return transfer_data; }
+    
+    // Advance to next byte after transfer
+    void AcknowledgeTransfer();
+    
+private:
+    // === Internal State (directly exposed internal flip-flops) ===
+    uint8_t source_page;        // High byte of source address (written to $FF46)
+    uint8_t byte_index;         // Current byte being transferred (0-159)
+    bool active;                // Transfer in progress
+    bool in_startup;            // In 4-cycle startup delay
+    
+    // === Transfer Timing (directly exposed internal counters) ===
+    uint8_t cycle_counter;      // T-cycles within current byte transfer
+    uint8_t transfer_data;      // Data being transferred
+    
+    // === Constants (directly expose the DMA timing) ===
+    static constexpr uint8_t BYTES_TO_TRANSFER = 160;
+    static constexpr uint8_t CYCLES_PER_BYTE = 4;  // 4 T-cycles per byte
+    static constexpr uint8_t STARTUP_DELAY = 4;    // 4 T-cycles setup before first byte
+};
