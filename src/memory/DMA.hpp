@@ -62,8 +62,10 @@ private:
     uint8_t source_page;        // High byte of source address (written to $FF46)
     uint8_t byte_index;         // Current byte being transferred (0-159)
     bool active;                // Transfer in progress
-    bool in_startup;            // In 4-cycle startup delay
+    uint8_t warm_up_cycles;     // M-cycle counter for warm-up/transfer phases
     bool in_winding_down;       // SameBoy dest=0xA0 phase: DMA active but complete
+    bool is_restarting;         // DMA was restarted while previous was running
+                                // Per SameBoy: keeps OAM blocked during restart
     
     // === Transfer Timing (directly exposed internal counters) ===
     uint8_t cycle_counter;      // T-cycles within current byte transfer
@@ -73,5 +75,4 @@ private:
     // === Constants (directly expose the DMA timing) ===
     static constexpr uint8_t BYTES_TO_TRANSFER = 160;
     static constexpr uint8_t CYCLES_PER_BYTE = 4;  // 4 T-cycles per byte
-    static constexpr uint8_t STARTUP_DELAY = 4;    // 4 T-cycles setup before first byte
 };
