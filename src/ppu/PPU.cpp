@@ -109,7 +109,7 @@ void PPU::StepOAMScan() {
     // Transition at dot 80
     if (dot_counter == 79) {
         mode = PIXEL_TRANSFER;
-        stat = (stat & 0xFC) | PIXEL_TRANSFER;
+        // Note: mode bits are stored in 'mode' variable, not in 'stat'
         
         InitFetcher();
         CheckStatInterrupt();
@@ -160,7 +160,7 @@ void PPU::StepPixelTransfer() {
             
             if (lcd_x >= 160) {
                 mode = HBLANK;
-                stat = (stat & 0xFC) | HBLANK;
+                // Note: mode bits are stored in 'mode' variable, not in 'stat'
                 CheckStatInterrupt();
             }
         }
@@ -177,12 +177,12 @@ void PPU::StepHBlank() {
         
         if (ly == 144) {
             mode = VBLANK;
-            stat = (stat & 0xFC) | VBLANK;
+            // Note: mode bits stored in 'mode' variable, not in 'stat'
             vblank_irq = true;
             frame_complete = true;
         } else {
             mode = OAM_SCAN;
-            stat = (stat & 0xFC) | OAM_SCAN;
+            // Note: mode bits stored in 'mode' variable, not in 'stat'
             sprite_count = 0;
             window_active = false;
         }
@@ -201,7 +201,7 @@ void PPU::StepVBlank() {
         if (ly > 153) {
             ly = 0;
             mode = OAM_SCAN;
-            stat = (stat & 0xFC) | OAM_SCAN;
+            // Note: mode bits stored in 'mode' variable, not in 'stat'
             window_line = 0;
             window_triggered = false;
             sprite_count = 0;
@@ -409,11 +409,22 @@ void PPU::RenderPixel() {
 
 // === STAT Interrupt ===
 void PPU::CheckStatInterrupt() {
-    // Per SameBoy GB_STAT_update:
-    // - LY=LYC comparison is done directly, not by reading the stat bit
-    // - Mode-based interrupts only for modes 0, 1, 2 (not 3)
-    bool lyc_match = (ly == lyc);
+    // Per SameBoy GB_STAT_update line 525:
+    // if (!(gb->io_registers[GB_IO_LCDC] & GB_LCDC_ENABLE)) return;
+    // When LCD is off, the comparison clock is frozen
+    if (!IsLCDEnabled()) return;
     
+    // Per SameBoy GB_STAT_update lines 532-542:
+    // Update LY=LYC bit in STAT register
+    bool lyc_match = (ly == lyc);
+    if (lyc_match) {
+        stat |= 0x04;   // Set LY=LYC bit
+    } else {
+        stat &= ~0x04;  // Clear LY=LYC bit
+    }
+    
+    // Per SameBoy GB_STAT_update lines 545-555:
+    // Mode-based interrupts only for modes 0, 1, 2 (not 3)
     bool line = ((stat & 0x40) && lyc_match) ||             // LYC=LY interrupt
                 ((stat & 0x20) && mode == OAM_SCAN) ||      // Mode 2 interrupt  
                 ((stat & 0x10) && mode == VBLANK) ||        // Mode 1 interrupt
@@ -428,7 +439,10 @@ void PPU::CheckStatInterrupt() {
 uint8_t PPU::ReadRegister(uint16_t addr) const {
     switch (addr) {
         case 0xFF40: return lcdc;
-        case 0xFF41: return (stat & 0x78) | mode | ((ly == lyc) ? 0x04 : 0) | 0x80;
+        case 0xFF41:
+            // Per SameBoy: STAT is stored with LY=LYC bit, not computed dynamically
+            // This allows the bit to be "frozen" when LCD is off
+            return stat | mode | 0x80;
         case 0xFF42: return scy;
         case 0xFF43: return scx;
         case 0xFF44: return ly;
@@ -444,15 +458,30 @@ uint8_t PPU::ReadRegister(uint16_t addr) const {
 
 void PPU::WriteRegister(uint16_t addr, uint8_t value) {
     switch (addr) {
-        case 0xFF40:
-            if (!(value & 0x80) && IsLCDEnabled()) {
-                ly = 0; dot_counter = 0; mode = OAM_SCAN;
-                stat = (stat & 0xFC) | OAM_SCAN;
+        case 0xFF40: {
+            bool was_enabled = IsLCDEnabled();
+            if (!(value & 0x80) && was_enabled) {
+                // LCD turning OFF per SameBoy GB_lcd_off:
+                // - LY = 0, mode = 0 (HBlank)
+                // - LY=LYC bit (bit 2 of stat) is preserved
+                // - Mode bits stored separately in 'mode' variable
+                ly = 0;
+                dot_counter = 0;
+                mode = HBLANK;  // Per SameBoy line 575: STAT mode = 0
+                // Note: Don't touch stat here - preserve bit 2 (LY=LYC)
             }
             lcdc = value;
+            if ((value & 0x80) && !was_enabled) {
+                // LCD turning ON - per SameBoy, the comparison clock starts
+                // and LY=LYC comparison is immediately updated
+                CheckStatInterrupt();
+            }
             break;
+        }
         case 0xFF41:
-            stat = (stat & 0x07) | (value & 0x78);
+            // Per SameBoy: preserve bit 2 (LY=LYC) and set bits 3-6 from value
+            // Bits 0-1 (mode) are stored separately in 'mode' variable
+            stat = (stat & 0x04) | (value & 0x78);
             CheckStatInterrupt();  // Per SameBoy: re-evaluate IRQ line after enable changes
             break;
         case 0xFF42: scy = value; break;
