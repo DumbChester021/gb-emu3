@@ -259,7 +259,7 @@ HALT bug correctly implemented (PC fails to increment when IME=0 with pending in
 
 ## Mooneye Test Results
 
-**Current Status: 82/89 passing**
+**Current Status: 85/89 passing**
 
 | Category | Passed | Total |
 |----------|--------|-------|
@@ -271,7 +271,7 @@ HALT bug correctly implemented (PC fails to increment when IME=0 with pending in
 | Halt | 4 | 4 ✅ |
 | EI/DI | 4 | 4 ✅ |
 | Call/Ret Timing | 8 | 8 ✅ |
-| PPU | 5 | 12 |
+| PPU | 8 | 12 |
 | OAM DMA | 5 | 5 ✅ |
 | Interrupts | 2 | 2 ✅ |
 
@@ -294,6 +294,18 @@ The PPU uses a hardware-accurate pixel FIFO renderer:
 | OAM scan | ✅ 10 sprite limit |
 | Sprite FIFO overlay | ✅ 8 transparent slots + overlay |
 | Fine SCX scrolling | ✅ Works |
+
+#### Mode 3 Transition Timing
+
+Mode 3 timing follows SameBoy's display.c implementation:
+
+| Event | Dot Counter | SameBoy Reference |
+|-------|-------------|-------------------|
+| `mode_for_interrupt = 3` | dot 79 | Line 1829 |
+| STAT read mode = 3 | dot 83+ | Line 1828 |
+| `mode = PIXEL_TRANSFER` | dot 84 | Line 1845 (mode_3_start) |
+| First pixel work | dot 85 | After mode transition |
+| Mode 0 STAT/interrupt | dot 252 | After 167-cycle Mode 3 |
 
 ### Memory Access Timing
 

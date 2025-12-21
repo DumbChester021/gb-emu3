@@ -67,13 +67,14 @@ private:
         PIXEL_TRANSFER = 3
     };
     
-    // === Fetcher States (5-step state machine) ===
+    // === Fetcher States (4-step state machine per SameBoy) ===
+    // Per SameBoy display.c lines 862-872: GET_TILE (2T), GET_DATA_LOW (2T),
+    // GET_DATA_HIGH (2T), then PUSH immediately - no SLEEP step
     enum class FetcherStep : uint8_t {
-        GET_TILE,           // Read tile number from tilemap
-        GET_TILE_DATA_LOW,  // Read low byte of tile data
-        GET_TILE_DATA_HIGH, // Read high byte of tile data
-        SLEEP,              // Wait cycle
-        PUSH                // Push 8 pixels to FIFO
+        GET_TILE,           // Read tile number from tilemap (2 T-cycles)
+        GET_TILE_DATA_LOW,  // Read low byte of tile data (2 T-cycles)
+        GET_TILE_DATA_HIGH, // Read high byte of tile data (2 T-cycles)
+        PUSH                // Push 8 pixels to FIFO (1 T-cycle when FIFO ready)
     };
     
     // === Pixel FIFO Entry ===

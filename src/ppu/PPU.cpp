@@ -142,14 +142,29 @@ void PPU::StepOAMScan() {
         }
     }
     
-    // Transition to Mode 3 at dot 84 per SameBoy display.c line 1824:
-    // cycles_for_line = MODE2_LENGTH + 4 = 80 + 4 = 84
-    if (dot_counter == 83) {
-        mode = PIXEL_TRANSFER;
-        mode_for_interrupt = 3;  // Per SameBoy: no mode-based interrupt during Mode 3
-        
-        InitFetcher();
+    // Mode 3 transition timing per SameBoy analysis:
+    // SameBoy has 4 cycles before OAM loop (lines 1770-1789: 2+1+1)
+    // My dot 0 = SameBoy cycle 4, so: SameBoy cycle N = my dot (N-4)
+    //
+    // SameBoy:
+    //   - STAT mode = 3 at cycle 84 = my dot 80
+    //   - mode_3_start at cycle 89 = my dot 85 (after +5 cycles: 84+5=89)
+    //   - Mode 3 rendering = 167 cycles
+    //   - Mode 0 STAT at cycle 256 = my dot 252
+    //   - Mode 0 interrupt at cycle 257 = my dot 253
+    
+    if (dot_counter == 79) {
+        // STAT mode = 3 starts at SameBoy cycle 84 = my dot 80
+        // But we check at dot 79 so the change takes effect AT dot 80
+        mode_for_interrupt = 3;
         CheckStatInterrupt();
+    }
+    
+    if (dot_counter == 84) {
+        // mode_3_start: SameBoy cycle 89 = my dot 85
+        // Check at dot 84 so PIXEL_TRANSFER starts AT dot 85
+        mode = PIXEL_TRANSFER;
+        InitFetcher();
     }
 }
 
@@ -202,7 +217,7 @@ void PPU::StepPixelTransfer() {
                 
                 if (lcd_x >= 160) {
                     mode = HBLANK;
-                    mode_for_interrupt = 0;  // Per SameBoy: Mode 0 interrupt check
+                    mode_for_interrupt = 0;
                     CheckStatInterrupt();
                 }
             }
@@ -270,15 +285,20 @@ void PPU::StepVBlank() {
 void PPU::InitFetcher() {
     ClearFIFOs();
     
-    // Note: SameBoy pre-fills with 8 junk pixels but uses position_in_line=-16
-    // to track when actual rendering starts. We don't have that, so skip prefill.
+    // Per SameBoy display.c line 1851: Pre-fill FIFO with 8 "junk" pixels
+    // These will be discarded, but allow rendering to start immediately
+    // This enables pixel pop/render to run in parallel with the first tile fetch
+    for (int i = 0; i < 8; i++) {
+        bg_fifo[bg_fifo_size++] = {0, 0, false, 0};  // Junk pixel
+    }
     
     fetcher_step = FetcherStep::GET_TILE;
     fetcher_dots = 0;
     fetcher_x = 0;
     fetcher_window = false;
     lcd_x = 0;
-    discard_pixels = scx & 7;
+    // Discard the 8 junk pixels + SCX fine scroll
+    discard_pixels = 8 + (scx & 7);
     sprite_index = 0;
     fetching_sprite = false;
 }
@@ -307,17 +327,15 @@ void PPU::AdvanceFetcher() {
         case FetcherStep::GET_TILE_DATA_HIGH:
             if (fetcher_dots >= 2) {
                 fetcher_tile_high = FetchTileDataHigh();
-                fetcher_step = FetcherStep::SLEEP;
-                fetcher_dots = 0;
-            }
-            break;
-            
-        case FetcherStep::SLEEP:
-            if (fetcher_dots >= 2) {
+                // Per SameBoy: go directly to PUSH, no SLEEP step
                 fetcher_step = FetcherStep::PUSH;
                 fetcher_dots = 0;
             }
             break;
+            
+        // Note: Per SameBoy display.c lines 862-872, there's no SLEEP step between
+        // GET_TILE_DATA_HIGH and PUSH. The fetcher is only 6 states (GET_TILE T1/T2,
+        // GET_DATA_LOW T1/T2, GET_DATA_HIGH T1/T2) plus PUSH.
             
         case FetcherStep::PUSH:
             // Push when FIFO has room for 8 more pixels (per Pan Docs)
@@ -522,12 +540,18 @@ uint8_t PPU::ReadRegister(uint16_t addr) const {
     switch (addr) {
         case 0xFF40: return lcdc;
         case 0xFF41: {
-            // Per SameBoy display.c lines 1778-1792:
-            // Mode 2 STAT bits appear 1 T-cycle after interrupt fires
-            // At dot 0, return mode 0 (HBLANK) even though internal mode is OAM_SCAN
+            // Per SameBoy display.c:
+            // - At dot 0 of line (non-zero), STAT mode bits still show 0 (HBLANK)
+            // - STAT mode = 3 at dot 83 (based on pan docs: 80-dot OAM + 3-dot transition)
+            // Note: mode_for_interrupt changes earlier for interrupt purposes
             uint8_t stat_mode = mode;
-            if (mode == OAM_SCAN && dot_counter == 0 && ly != 0) {
-                stat_mode = HBLANK;  // Return mode 0 at dot 0
+            
+            if (mode == OAM_SCAN) {
+                if (dot_counter == 0 && ly != 0) {
+                    stat_mode = HBLANK;  // Return mode 0 at dot 0
+                } else if (dot_counter >= 83) {
+                    stat_mode = PIXEL_TRANSFER;  // STAT shows mode 3 at dot 83+
+                }
             }
             return stat | stat_mode | 0x80;
         }
