@@ -269,34 +269,47 @@ void APU::GetSample(float& left, float& right) const {
 // === Register Access ===
 
 uint8_t APU::ReadRegister(uint16_t addr) const {
+    // Per SameBoy apu.c read_mask: unused bits read as 1
     switch (addr) {
+        // NR1X - Channel 1
         case 0xFF10: return ch1.sweep_period << 4 | ch1.sweep_negate << 3 | ch1.sweep_shift | 0x80;
-        case 0xFF11: return ch1.duty << 6 | 0x3F;
-        case 0xFF12: return ch1.volume_init << 4 | ch1.envelope_add << 3 | ch1.envelope_period;
-        case 0xFF13: return 0xFF;
+        case 0xFF11: return ch1.duty << 6 | 0x3F;  // Only duty readable
+        case 0xFF12: return ch1.volume_init << 4 | ch1.envelope_add << 3 | ch1.envelope_period;  // 0x00 mask
+        case 0xFF13: return 0xFF;  // Write-only
         case 0xFF14: return ch1.length_enable << 6 | 0xBF;
         
+        // NR2X - Channel 2 (0xFF15 unused)
+        case 0xFF15: return 0xFF;  // Unused register
         case 0xFF16: return ch2.duty << 6 | 0x3F;
         case 0xFF17: return ch2.volume_init << 4 | ch2.envelope_add << 3 | ch2.envelope_period;
-        case 0xFF18: return 0xFF;
+        case 0xFF18: return 0xFF;  // Write-only
         case 0xFF19: return ch2.length_enable << 6 | 0xBF;
         
+        // NR3X - Channel 3
         case 0xFF1A: return ch3.dac_enabled << 7 | 0x7F;
-        case 0xFF1B: return 0xFF;
+        case 0xFF1B: return 0xFF;  // Write-only
         case 0xFF1C: return ch3.volume_code << 5 | 0x9F;
-        case 0xFF1D: return 0xFF;
+        case 0xFF1D: return 0xFF;  // Write-only
         case 0xFF1E: return ch3.length_enable << 6 | 0xBF;
         
-        case 0xFF20: return 0xFF;
+        // NR4X - Channel 4 (0xFF1F unused)
+        case 0xFF1F: return 0xFF;  // Unused register
+        case 0xFF20: return 0xFF;  // Write-only (length has 0xFF mask per SameBoy)
         case 0xFF21: return ch4.volume_init << 4 | ch4.envelope_add << 3 | ch4.envelope_period;
         case 0xFF22: return ch4.clock_shift << 4 | ch4.width_mode << 3 | ch4.divisor_code;
         case 0xFF23: return ch4.length_enable << 6 | 0xBF;
         
-        case 0xFF24: return left_volume << 4 | right_volume;
-        case 0xFF25: return channel_left << 4 | channel_right;
-        case 0xFF26: return power_on << 7 | 0x70 |
+        // NR5X - Control
+        case 0xFF24: return left_volume << 4 | right_volume;  // 0x00 mask - Vin bits not implemented
+        case 0xFF25: return channel_left << 4 | channel_right;  // 0x00 mask
+        case 0xFF26: return power_on << 7 | 0x70 |  // Bits 4-6 unused = 1
                      (ch4.enabled << 3) | (ch3.enabled << 2) | 
                      (ch2.enabled << 1) | ch1.enabled;
+        
+        // 0xFF27-0xFF2F unused
+        case 0xFF27: case 0xFF28: case 0xFF29: case 0xFF2A:
+        case 0xFF2B: case 0xFF2C: case 0xFF2D: case 0xFF2E:
+        case 0xFF2F: return 0xFF;
         
         default: return 0xFF;
     }
@@ -400,6 +413,11 @@ void APU::WriteRegister(uint16_t addr, uint8_t value) {
 }
 
 uint8_t APU::ReadWaveRAM(uint8_t index) const {
+    // Per SameBoy apu.c lines 1051-1053:
+    // On DMG, reading wave RAM while channel 3 is active returns 0xFF
+    if (ch3.enabled) {
+        return 0xFF;
+    }
     return wave_ram[index];
 }
 
