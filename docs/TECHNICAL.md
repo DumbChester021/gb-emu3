@@ -259,7 +259,7 @@ HALT bug correctly implemented (PC fails to increment when IME=0 with pending in
 
 ## Mooneye Test Results
 
-**Current Status: 79/89 passing**
+**Current Status: 80/89 passing**
 
 | Category | Passed | Total |
 |----------|--------|-------|
@@ -271,7 +271,7 @@ HALT bug correctly implemented (PC fails to increment when IME=0 with pending in
 | Halt | 4 | 4 ✅ |
 | EI/DI | 4 | 4 ✅ |
 | Call/Ret Timing | 8 | 8 ✅ |
-| PPU | 2 | 12 |
+| PPU | 3 | 12 |
 | OAM DMA | 5 | 5 ✅ |
 | Interrupts | 2 | 2 ✅ |
 

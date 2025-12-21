@@ -409,10 +409,17 @@ void PPU::RenderPixel() {
 
 // === STAT Interrupt ===
 void PPU::CheckStatInterrupt() {
-    bool line = ((stat & 0x40) && (stat & 0x04)) ||
-                ((stat & 0x20) && mode == OAM_SCAN) ||
-                ((stat & 0x10) && mode == VBLANK) ||
-                ((stat & 0x08) && mode == HBLANK);
+    // Per SameBoy GB_STAT_update:
+    // - LY=LYC comparison is done directly, not by reading the stat bit
+    // - Mode-based interrupts only for modes 0, 1, 2 (not 3)
+    bool lyc_match = (ly == lyc);
+    
+    bool line = ((stat & 0x40) && lyc_match) ||             // LYC=LY interrupt
+                ((stat & 0x20) && mode == OAM_SCAN) ||      // Mode 2 interrupt  
+                ((stat & 0x10) && mode == VBLANK) ||        // Mode 1 interrupt
+                ((stat & 0x08) && mode == HBLANK);          // Mode 0 interrupt
+    
+    // Rising edge detection - only trigger on LOW→HIGH transition
     if (line && !stat_line) stat_irq = true;
     stat_line = line;
 }
@@ -444,10 +451,16 @@ void PPU::WriteRegister(uint16_t addr, uint8_t value) {
             }
             lcdc = value;
             break;
-        case 0xFF41: stat = (stat & 0x07) | (value & 0x78); break;
+        case 0xFF41:
+            stat = (stat & 0x07) | (value & 0x78);
+            CheckStatInterrupt();  // Per SameBoy: re-evaluate IRQ line after enable changes
+            break;
         case 0xFF42: scy = value; break;
         case 0xFF43: scx = value; break;
-        case 0xFF45: lyc = value; break;
+        case 0xFF45:
+            lyc = value;
+            CheckStatInterrupt();  // Per SameBoy: re-evaluate IRQ line after LYC change
+            break;
         case 0xFF47: bgp = value; break;
         case 0xFF48: obp0 = value; break;
         case 0xFF49: obp1 = value; break;
