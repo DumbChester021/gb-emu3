@@ -15,10 +15,8 @@ void APU::Reset() {
     ch4 = {};
     
     power_on = true;
-    left_volume = 7;
-    right_volume = 7;
-    channel_left = 0xFF;
-    channel_right = 0xFF;
+    nr50 = 0x77;  // Default: max volume both channels, no VIN
+    nr51 = 0xFF;  // Default: all channels to both outputs
     
     wave_ram.fill(0);
     frame_sequencer_step = 0;
@@ -246,19 +244,19 @@ void APU::MixChannels() {
     uint8_t ch3_out = GetChannel3Output();
     uint8_t ch4_out = GetChannel4Output();
     
-    if (channel_left & 0x01) left += ch1_out;
-    if (channel_left & 0x02) left += ch2_out;
-    if (channel_left & 0x04) left += ch3_out;
-    if (channel_left & 0x08) left += ch4_out;
+    if (GetChannelLeft() & 0x01) left += ch1_out;
+    if (GetChannelLeft() & 0x02) left += ch2_out;
+    if (GetChannelLeft() & 0x04) left += ch3_out;
+    if (GetChannelLeft() & 0x08) left += ch4_out;
     
-    if (channel_right & 0x01) right += ch1_out;
-    if (channel_right & 0x02) right += ch2_out;
-    if (channel_right & 0x04) right += ch3_out;
-    if (channel_right & 0x08) right += ch4_out;
+    if (GetChannelRight() & 0x01) right += ch1_out;
+    if (GetChannelRight() & 0x02) right += ch2_out;
+    if (GetChannelRight() & 0x04) right += ch3_out;
+    if (GetChannelRight() & 0x08) right += ch4_out;
     
     // Normalize and apply master volume
-    left_sample = (left / 60.0f) * ((left_volume + 1) / 8.0f);
-    right_sample = (right / 60.0f) * ((right_volume + 1) / 8.0f);
+    left_sample = (left / 60.0f) * ((GetLeftVolume() + 1) / 8.0f);
+    right_sample = (right / 60.0f) * ((GetRightVolume() + 1) / 8.0f);
 }
 
 void APU::GetSample(float& left, float& right) const {
@@ -300,8 +298,8 @@ uint8_t APU::ReadRegister(uint16_t addr) const {
         case 0xFF23: return ch4.length_enable << 6 | 0xBF;
         
         // NR5X - Control
-        case 0xFF24: return left_volume << 4 | right_volume;  // 0x00 mask - Vin bits not implemented
-        case 0xFF25: return channel_left << 4 | channel_right;  // 0x00 mask
+        case 0xFF24: return nr50;  // Return full byte including VIN bits
+        case 0xFF25: return nr51;  // Return full byte
         case 0xFF26: return power_on << 7 | 0x70 |  // Bits 4-6 unused = 1
                      (ch4.enabled << 3) | (ch3.enabled << 2) | 
                      (ch2.enabled << 1) | ch1.enabled;
@@ -398,12 +396,10 @@ void APU::WriteRegister(uint16_t addr, uint8_t value) {
             break;
             
         case 0xFF24:
-            left_volume = (value >> 4) & 7;
-            right_volume = value & 7;
+            nr50 = value;  // Store full byte including VIN bits
             break;
         case 0xFF25:
-            channel_left = (value >> 4) & 0x0F;
-            channel_right = value & 0x0F;
+            nr51 = value;  // Store full byte
             break;
         case 0xFF26:
             power_on = (value >> 7) & 1;
