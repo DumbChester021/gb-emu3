@@ -127,15 +127,10 @@ private:
     
     // === Master Control (directly exposed as registers) ===
     bool power_on;                  // NR52 bit 7
-    uint8_t nr50;                   // NR50 raw byte (VIN + volume bits)
-    uint8_t nr51;                   // NR51 raw byte (channel enables)
-    
-    // Volume access (extracted from nr50)
-    uint8_t GetLeftVolume() const { return (nr50 >> 4) & 7; }
-    uint8_t GetRightVolume() const { return nr50 & 7; }
-    // Channel access (extracted from nr51)
-    uint8_t GetChannelLeft() const { return (nr51 >> 4) & 0x0F; }
-    uint8_t GetChannelRight() const { return nr51 & 0x0F; }
+    uint8_t left_volume;            // NR50 bits 6-4
+    uint8_t right_volume;           // NR50 bits 2-0
+    uint8_t channel_left;           // NR51 bits 7-4
+    uint8_t channel_right;          // NR51 bits 3-0
     
     // === Wave RAM (directly exposed $FF30-$FF3F) ===
     std::array<uint8_t, 16> wave_ram;
