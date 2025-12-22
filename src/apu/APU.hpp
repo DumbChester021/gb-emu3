@@ -114,7 +114,6 @@ private:
         uint8_t position;           // Wave table position (0-31)
         uint8_t sample_buffer;      // Last read sample
         bool wave_form_just_read;   // Per SameBoy: 1-cycle window when wave RAM is readable
-        int8_t sample_read_cycle;   // T-cycle offset (0-3) when sample was read, -1 if not read this step
     } ch3;
     
     // === Channel 4: Noise ===

@@ -276,8 +276,11 @@ The APU implementation follows SameBoy's hardware-verified behavior:
 | Feature | Status | SameBoy Reference |
 |---------|--------|-------------------|
 | DMG wave RAM corruption on re-trigger | ✅ | Lines 1550-1574 |
-| wave_form_just_read 1-cycle access window | ⏳ | Lines 910-929 |
-| Read returns current sample byte in window | ⏳ | Lines 1051-1058 |
+| wave_form_just_read 1-cycle access window | ✅ | Lines 910-929 |
+| Read returns current sample byte in window | ✅ | Lines 1051-1058 |
+| Write to current position in window | ✅ | Lines 1268-1272 |
+| Timer period = (2048 - freq) * 2 for 4MHz | ✅ | Pan Docs |
+| Trigger +6 T-cycle delay (+3 @ 2MHz rate) | ✅ | Line 1586 |
 
 ### DMG Length Counter Survival
 
@@ -298,12 +301,12 @@ The APU implementation follows SameBoy's hardware-verified behavior:
 | 06-overflow on trigger | ✅ |
 | 07-len sweep period sync | ✅ |
 | 08-len ctr during power | ✅ |
-| 09-wave read while on | ⏳ |
-| 10-wave trigger while on | ⏳ |
+| 09-wave read while on | ✅ |
+| 10-wave trigger while on | ✅ |
 | 11-regs after power | ✅ |
-| 12-wave write while on | ⏳ |
+| 12-wave write while on | ✅ |
 
-**9/12 tests passing** - Wave channel timing (09, 10, 12) requires sub-M-cycle precision.
+**12/12 tests passing** ✅
 
 ---
 

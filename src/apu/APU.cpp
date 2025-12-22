@@ -103,32 +103,42 @@ void APU::StepChannel2(uint8_t cycles) {
 }
 
 void APU::StepChannel3(uint8_t cycles) {
+    // Per SameBoy apu.c lines 910-929: Exact wave_form_just_read timing
+    // 
+    // The flag is true ONLY if a sample is read on the LAST T-cycle of this batch.
+    // In SameBoy, after consuming timer+1 cycles, if cycles_left == 0, the sample
+    // was read on the final cycle, so flag stays true. If cycles_left > 0, there
+    // are more cycles after the read, so flag is cleared.
+    
+    ch3.wave_form_just_read = false;
+    
     if (!ch3.enabled) return;
     
-    // Per SameBoy apu.c lines 910-929: exact wave_form_just_read timing
-    // Track the T-cycle offset (0-3) when sample was read for precise timing
-    ch3.wave_form_just_read = false;
-    ch3.sample_read_cycle = -1;  // -1 means no sample read this step
+    uint16_t cycles_left = cycles;
     
-    int16_t cycles_left = cycles;
-    int16_t cycles_consumed = 0;  // Track total cycles consumed to know T-cycle offset
-    
+    // Process cycles until timer would underflow
+    // Per SameBoy: while (cycles_left > sample_countdown)
     while (cycles_left > ch3.frequency_timer) {
-        cycles_consumed += ch3.frequency_timer + 1;
+        // Consume timer + 1 cycles (timer counts down to 0, then fires)
         cycles_left -= ch3.frequency_timer + 1;
+        
+        // Reload timer: Per Pan Docs, period = (2048 - frequency) * 2 for 4MHz T-cycles
         ch3.frequency_timer = (2048 - ch3.frequency) * 2 - 1;
+        
+        // Advance position
         ch3.position = (ch3.position + 1) & 31;
         
+        // Read sample byte from wave RAM
         uint8_t byte = wave_ram[ch3.position / 2];
         ch3.sample_buffer = (ch3.position & 1) ? (byte & 0x0F) : (byte >> 4);
         
-        // Record T-cycle offset when sample was read (0-3 within the M-cycle)
-        ch3.sample_read_cycle = (cycles_consumed - 1) & 3;
+        // Set flag - this will persist only if this is the last cycle
         ch3.wave_form_just_read = true;
     }
     
-    // Per SameBoy lines 926-928: if any cycles remain after sample read, window closes
-    if (cycles_left > 0) {
+    // Per SameBoy lines 926-928: if cycles remain after sample read, consume them
+    // and clear the flag (sample was not read on the final T-cycle)
+    if (cycles_left) {
         ch3.frequency_timer -= cycles_left;
         ch3.wave_form_just_read = false;
     }
@@ -288,8 +298,10 @@ void APU::TriggerChannel2() {
 
 void APU::TriggerChannel3() {
     // Per SameBoy lines 1550-1574: DMG wave RAM corruption bug
-    // If channel is retriggerred 1 cycle before APU reads from it, wave RAM gets corrupted
-    if (ch3.enabled && ch3.frequency_timer == 0) {
+    // If channel is retriggerred "1 cycle" before APU reads from it, wave RAM gets corrupted
+    // SameBoy checks sample_countdown == 0 at 2MHz rate
+    // Our 4MHz equivalent: frequency_timer <= 1 (last 2 T-cycles = 1 SameBoy 2MHz cycle)
+    if (ch3.enabled && ch3.frequency_timer <= 1) {
         unsigned offset = ((ch3.position + 1) >> 1) & 0xF;
         
         // Per SameBoy: corruption behavior depends on sample position
@@ -313,8 +325,8 @@ void APU::TriggerChannel3() {
         ch3.length_counter = 256;
         ch3.length_enable = false;
     }
-    // Per SameBoy line 1586: add +3 delay on trigger
-    ch3.frequency_timer = (2048 - ch3.frequency) * 2 + 3;
+    // Per Pan Docs: period = (2048 - frequency) * 2, plus +6 delay on trigger (3 * 2MHz = 6 * 4MHz)
+    ch3.frequency_timer = (2048 - ch3.frequency) * 2 + 5;
     ch3.position = 0;
 }
 
@@ -703,5 +715,17 @@ uint8_t APU::ReadWaveRAM(uint8_t index) const {
 }
 
 void APU::WriteWaveRAM(uint8_t index, uint8_t value) {
+    // Per SameBoy apu.c lines 1268-1272:
+    // On DMG, writing wave RAM while channel 3 is active:
+    // - If NOT in wave_form_just_read window → write is ignored
+    // - If in window → write goes to current playback position, not requested index
+    if (ch3.enabled) {
+        if (!ch3.wave_form_just_read) {
+            return;  // Write ignored outside access window
+        }
+        // During window, write to current playback position
+        wave_ram[ch3.position / 2] = value;
+        return;
+    }
     wave_ram[index] = value;
 }
