@@ -31,14 +31,14 @@ This emulator aims to match real DMG hardware behavior exactly:
 | **Halt** | 4/4 ✅ |
 | **EI/DI** | 4/4 ✅ |
 | **Call/Ret Timing** | 8/8 ✅ |
-| **Total Mooneye** | **82/89** |
+| **Total Mooneye** | **31/35** (selected) |
 
 ---
 
 ## Features
 
 - **Memory Bank Controllers**: MBC1, MBC1M (multicart), MBC2, MBC3 (with RTC), MBC5
-- **Audio**: 4-channel APU with accurate mixing
+- **Audio**: 4-channel APU with accurate mixing, audio-driven 59.73 Hz timing
 - **Input**: Keyboard and gamepad support
 - **Save States**: Battery-backed save support
 - **Boot ROM**: Optional DMG boot ROM support

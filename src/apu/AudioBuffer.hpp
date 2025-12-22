@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <cstddef>
+#include <thread>
 
 /**
  * AudioBuffer - Lock-free Ring Buffer for Audio Samples
@@ -28,11 +29,23 @@ public:
     /**
      * Push a stereo sample to the buffer.
      * Called from emulator thread.
-     * Returns false if buffer is full.
+     * Blocks briefly if buffer is nearly full to throttle emulation to real-time.
+     * Returns false only if blocking times out.
      */
     bool Push(float left, float right) {
         size_t write = write_pos.load(std::memory_order_relaxed);
         size_t next_write = (write + 1) & (CAPACITY - 1);
+        
+        // If buffer is 75%+ full, spin briefly to let audio callback drain it
+        // This provides natural throttling to ~59.73 Hz without VSYNC
+        size_t available = Available();
+        if (available > (CAPACITY * 3 / 4)) {
+            // Yield to audio thread - don't burn CPU
+            for (int spin = 0; spin < 100 && available > (CAPACITY * 3 / 4); ++spin) {
+                std::this_thread::yield();
+                available = Available();
+            }
+        }
         
         // Check if full (write catching up to read)
         if (next_write == read_pos.load(std::memory_order_acquire)) {

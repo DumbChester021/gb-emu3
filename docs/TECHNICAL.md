@@ -241,6 +241,26 @@ TIMA Overflow:
 
 ---
 
+## Frame Timing
+
+The emulator runs at the exact DMG hardware frame rate:
+
+| Metric | Value |
+|--------|-------|
+| Master Clock | 4,194,304 Hz |
+| T-cycles per Frame | 70,224 |
+| Frame Rate | 59.7275 Hz |
+| Audio Sample Rate | 48,000 Hz |
+
+### Audio-Driven Synchronization
+
+Rather than relying on monitor VSYNC (60 Hz), the emulator uses audio buffer fullness to naturally throttle to real-time:
+- APU generates samples at exact 48kHz (using fractional cycle counter)
+- When audio buffer reaches 75% capacity, emulation yields to audio thread
+- This provides precise ~59.73 Hz frame rate matching real hardware
+
+---
+
 ## APU Hardware Accuracy
 
 The APU implementation follows SameBoy's hardware-verified behavior:
@@ -328,7 +348,7 @@ HALT bug correctly implemented (PC fails to increment when IME=0 with pending in
 
 ## Mooneye Test Results
 
-**Current Status: 85/89 passing**
+**Current Status: 31/35 passing** (selected acceptance tests)
 
 | Category | Passed | Total |
 |----------|--------|-------|

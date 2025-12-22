@@ -53,8 +53,7 @@ bool Window::Init(const std::string& title, int window_scale) {
         return false;
     }
     
-    renderer = SDL_CreateRenderer(window, -1, 
-        SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
     
     if (!renderer) {
         std::cerr << "SDL_CreateRenderer failed: " << SDL_GetError() << "\n";

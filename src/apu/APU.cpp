@@ -44,13 +44,16 @@ void APU::Step(uint8_t cycles) {
     StepChannel3(cycles);
     StepChannel4(cycles);
     
-    // Downsample for audio output
-    sample_counter += cycles;
-    if (sample_counter >= 87) {  // ~48000 Hz at 4.19 MHz
-        sample_counter -= 87;
+    // Accurate downsampling to 48kHz
+    // GB clock: 4,194,304 Hz, Target: 48,000 Hz
+    // Accumulate cycles * 48000, output sample when >= 4194304
+    sample_counter += cycles * 48000;
+    while (sample_counter >= 4194304) {
+        sample_counter -= 4194304;
         MixChannels();
         
         // Push to audio buffer for SDL playback
+        // This will block/drop when buffer is full, providing natural throttling
         if (audio_buffer) {
             audio_buffer->Push(left_sample, right_sample);
         }

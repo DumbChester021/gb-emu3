@@ -158,7 +158,7 @@ private:
     float left_sample;
     float right_sample;
     bool sample_ready;
-    uint16_t sample_counter;        // For downsampling to target rate
+    uint32_t sample_counter;        // Fractional counter for accurate 48kHz downsampling
     AudioBuffer* audio_buffer = nullptr;  // External buffer for SDL audio
     
     // === Internal Operations (directly expose the channel logic) ===
