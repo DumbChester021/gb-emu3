@@ -7,6 +7,7 @@
 #include "Emulator.hpp"
 #include "frontend/Window.hpp"
 #include "cartridge/Cartridge.hpp"
+#include "apu/AudioBuffer.hpp"
 
 void PrintUsage(const char* program) {
     std::cout << "Usage: " << program << " [options] [rom_file]\n"
@@ -148,6 +149,12 @@ int RunHeadless(Emulator& emu, uint64_t max_cycles, const std::string& dump_path
 int RunGUI(Emulator& emu, Window& window, const std::string& rom_info) {
     window.DisplayROMInfo(rom_info);
     
+    // Initialize audio
+    AudioBuffer audio_buffer;
+    if (window.InitAudio(&audio_buffer)) {
+        emu.ConnectAudioBuffer(&audio_buffer);
+    }
+    
     std::cout << "\n=== Starting Emulation ===\n";
     std::cout << "Controls: Arrows = D-Pad, Z = A, X = B, RShift = Select, Enter = Start\n";
     std::cout << "Press ESC to quit\n\n";
@@ -250,7 +257,6 @@ int main(int argc, char* argv[]) {
     }
     
     std::string rom_info = cart.GetDetailedInfo();
-    std::cout << rom_info;
     
     Emulator emu;
     

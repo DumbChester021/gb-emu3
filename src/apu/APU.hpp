@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <array>
 
+class AudioBuffer;
+
 /**
  * APU - Audio Processing Unit
  * 
@@ -30,6 +32,9 @@ public:
     // Call this when DIV bit 4 has a falling edge
     void ClockFrameSequencer();
     
+    // For SameBoy skip_div_event glitch: Emulator informs APU of current DIV bit 12 state
+    void SetDivBit12High(bool high) { div_bit12_high = high; }
+    
     // === Register Interface (directly exposed memory-mapped I/O) ===
     uint8_t ReadRegister(uint16_t addr) const;
     void WriteRegister(uint16_t addr, uint8_t value);
@@ -45,6 +50,9 @@ public:
     // For sample buffer filling at target sample rate
     bool HasSample() const { return sample_ready; }
     void ClearSampleReady() { sample_ready = false; }
+    
+    // === Audio Buffer Connection ===
+    void SetAudioBuffer(AudioBuffer* buffer) { audio_buffer = buffer; }
     
 private:
     // === Channel 1: Pulse with Sweep ===
@@ -68,6 +76,7 @@ private:
         uint8_t sweep_timer;
         uint16_t shadow_freq;
         bool sweep_enabled;
+        bool swept_negate;          // True if negate was used in a calculation (for lockout)
         uint16_t length_counter;
         uint16_t frequency_timer;
         uint8_t duty_position;
@@ -101,9 +110,11 @@ private:
         
         bool enabled;
         uint16_t length_counter;
-        uint16_t frequency_timer;
+        int16_t frequency_timer;   // Changed to signed for easier comparison
         uint8_t position;           // Wave table position (0-31)
         uint8_t sample_buffer;      // Last read sample
+        bool wave_form_just_read;   // Per SameBoy: 1-cycle window when wave RAM is readable
+        int8_t sample_read_cycle;   // T-cycle offset (0-3) when sample was read, -1 if not read this step
     } ch3;
     
     // === Channel 4: Noise ===
@@ -121,28 +132,35 @@ private:
         uint8_t volume;
         uint8_t envelope_timer;
         uint16_t length_counter;
-        uint16_t frequency_timer;
+        int32_t frequency_timer;    // int32_t to handle large periods (8 << 15 = 262144)
         uint16_t lfsr;              // Linear Feedback Shift Register
     } ch4;
     
     // === Master Control (directly exposed as registers) ===
     bool power_on;                  // NR52 bit 7
-    uint8_t left_volume;            // NR50 bits 6-4
-    uint8_t right_volume;           // NR50 bits 2-0
+    uint8_t nr50;                   // NR50 raw byte (VIN + volume bits)
     uint8_t channel_left;           // NR51 bits 7-4
     uint8_t channel_right;          // NR51 bits 3-0
+    
+    // === Raw Register Storage (per SameBoy) ===
+    // Stores raw bytes for NR10-NR44 (0xFF10-0xFF23 = 20 bytes)
+    // Used for hardware-accurate read behavior
+    std::array<uint8_t, 24> io_registers;  // 0xFF10-0xFF27
     
     // === Wave RAM (directly exposed $FF30-$FF3F) ===
     std::array<uint8_t, 16> wave_ram;
     
     // === Frame Sequencer (clocked by DIV) ===
     uint8_t frame_sequencer_step;   // 0-7
+    bool skip_first_div_event;      // Per SameBoy skip_div_event: skip first event on power-on if DIV bit was high
+    bool div_bit12_high;            // Current state of DIV bit 12 (updated by Emulator)
     
     // === Sample Output (directly exposed) ===
     float left_sample;
     float right_sample;
     bool sample_ready;
     uint16_t sample_counter;        // For downsampling to target rate
+    AudioBuffer* audio_buffer = nullptr;  // External buffer for SDL audio
     
     // === Internal Operations (directly expose the channel logic) ===
     void StepChannel1(uint8_t cycles);

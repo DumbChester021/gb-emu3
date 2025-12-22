@@ -11,7 +11,7 @@ void Timer::Reset() {
     tac = 0;
     tima_reload_state = TIMA_RUNNING;
     interrupt_requested = false;
-    div_bit4_fell = false;
+    div_bit12_fell = false;
 }
 
 void Timer::Step(uint8_t cycles) {
@@ -19,9 +19,10 @@ void Timer::Step(uint8_t cycles) {
         uint16_t old_div = div_counter;
         div_counter++;
         
-        // Check DIV bit 4 falling edge for APU (512 Hz)
-        if ((old_div & 0x10) && !(div_counter & 0x10)) {
-            div_bit4_fell = true;
+        // Check DIV bit 12 falling edge for APU (512 Hz)
+        // Per SameBoy: apu_bit = 0x1000 for normal speed
+        if ((old_div & 0x1000) && !(div_counter & 0x1000)) {
+            div_bit12_fell = true;
         }
         
         // Advance TIMA reload state machine every M-cycle (4 T-cycles)

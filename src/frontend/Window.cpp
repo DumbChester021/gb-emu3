@@ -1,4 +1,5 @@
 #include "Window.hpp"
+#include "../apu/AudioBuffer.hpp"
 #include <iostream>
 #include <cstring>
 
@@ -24,6 +25,7 @@ Window::Window()
 }
 
 Window::~Window() {
+    CloseAudio();
     if (texture) SDL_DestroyTexture(texture);
     if (renderer) SDL_DestroyRenderer(renderer);
     if (window) SDL_DestroyWindow(window);
@@ -75,6 +77,52 @@ bool Window::Init(const std::string& title, int window_scale) {
     }
     
     return true;
+}
+
+bool Window::InitAudio(AudioBuffer* buffer) {
+    if (!buffer) return false;
+    
+    audio_buffer = buffer;
+    
+    SDL_AudioSpec want, have;
+    SDL_memset(&want, 0, sizeof(want));
+    want.freq = 48000;
+    want.format = AUDIO_F32;
+    want.channels = 2;
+    want.samples = 1024;  // ~21ms buffer at 48kHz
+    want.callback = AudioCallback;
+    want.userdata = audio_buffer;
+    
+    audio_device = SDL_OpenAudioDevice(nullptr, 0, &want, &have, 0);
+    if (audio_device == 0) {
+        std::cerr << "SDL_OpenAudioDevice failed: " << SDL_GetError() << "\n";
+        return false;
+    }
+    
+    // Start playback
+    SDL_PauseAudioDevice(audio_device, 0);
+    
+    std::cout << "Audio initialized: " << have.freq << "Hz, " 
+              << (int)have.channels << " channels, "
+              << have.samples << " samples\n";
+    
+    return true;
+}
+
+void Window::CloseAudio() {
+    if (audio_device != 0) {
+        SDL_CloseAudioDevice(audio_device);
+        audio_device = 0;
+    }
+    audio_buffer = nullptr;
+}
+
+void Window::AudioCallback(void* userdata, uint8_t* stream, int len) {
+    AudioBuffer* buffer = static_cast<AudioBuffer*>(userdata);
+    float* output = reinterpret_cast<float*>(stream);
+    size_t sample_count = len / sizeof(float) / 2;  // Stereo
+    
+    buffer->Pop(output, sample_count);
 }
 
 void Window::RenderFrame(const uint8_t* framebuffer) {

@@ -1,5 +1,6 @@
 #include "CPU.hpp"
 #include "Instructions.hpp"
+#include <cstdio>
 
 CPU::CPU() {
     Reset(true);

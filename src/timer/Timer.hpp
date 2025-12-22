@@ -19,7 +19,7 @@
  * Interface:
  * - Register access: DIV ($FF04), TIMA ($FF05), TMA ($FF06), TAC ($FF07)
  * - Interrupt output signal
- * - DIV bit 4 output (for APU frame sequencer)
+ * - DIV bit 12 output (for APU frame sequencer at 512 Hz)
  */
 class Timer {
 public:
@@ -39,9 +39,9 @@ public:
     void ClearInterrupt() { interrupt_requested = false; }
     
     // === DIV Bit Output (directly exposed for APU frame sequencer) ===
-    // Returns true when DIV bit 4 had a falling edge (512 Hz)
-    bool DidDivBit4Fall() const { return div_bit4_fell; }
-    void ClearDivBit4Fall() { div_bit4_fell = false; }
+    // Returns true when DIV bit 12 had a falling edge (512 Hz = 4194304 / 8192)
+    bool DidDivBit12Fall() const { return div_bit12_fell; }
+    void ClearDivBit12Fall() { div_bit12_fell = false; }
     
     // Full DIV counter for precise timing queries
     uint16_t GetDIVCounter() const { return div_counter; }
@@ -68,7 +68,7 @@ private:
     
     // === Output Signals (directly exposed output pins) ===
     bool interrupt_requested;
-    bool div_bit4_fell;         // For APU frame sequencer
+    bool div_bit12_fell;        // For APU frame sequencer (bit 12 = 512 Hz)
     
     // === Hardware-Accurate State Machine Methods ===
     void AdvanceTimaStateMachine();

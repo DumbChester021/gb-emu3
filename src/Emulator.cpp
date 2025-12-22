@@ -130,12 +130,16 @@ uint8_t Emulator::ReadIO(uint16_t addr) {
         // Interrupt Flag
         case 0xFF0F: result = interrupts->ReadIF(); break;
         
-        // APU
+        // APU (NR10-NR52 including unused registers)
         case 0xFF10: case 0xFF11: case 0xFF12: case 0xFF13: case 0xFF14:  // CH1
+        case 0xFF15:                                                       // Unused
         case 0xFF16: case 0xFF17: case 0xFF18: case 0xFF19:               // CH2
         case 0xFF1A: case 0xFF1B: case 0xFF1C: case 0xFF1D: case 0xFF1E:  // CH3
+        case 0xFF1F:                                                       // Unused
         case 0xFF20: case 0xFF21: case 0xFF22: case 0xFF23:               // CH4
         case 0xFF24: case 0xFF25: case 0xFF26:                            // Control
+        case 0xFF27: case 0xFF28: case 0xFF29: case 0xFF2A:               // Unused
+        case 0xFF2B: case 0xFF2C: case 0xFF2D: case 0xFF2E: case 0xFF2F:  // Unused
             result = apu->ReadRegister(addr); break;
         
         // Wave RAM
@@ -166,6 +170,7 @@ uint8_t Emulator::ReadIO(uint16_t addr) {
 }
 
 void Emulator::WriteIO(uint16_t addr, uint8_t value) {
+    // Just remove debug for now
     switch (addr) {
         // Joypad
         case 0xFF00: joypad->WriteRegister(value); break;
@@ -183,12 +188,18 @@ void Emulator::WriteIO(uint16_t addr, uint8_t value) {
         // Interrupt Flag
         case 0xFF0F: interrupts->WriteIF(value); break;
         
-        // APU
+        // APU (NR10-NR52 including unused registers)
         case 0xFF10: case 0xFF11: case 0xFF12: case 0xFF13: case 0xFF14:
+        case 0xFF15:  // Unused
         case 0xFF16: case 0xFF17: case 0xFF18: case 0xFF19:
         case 0xFF1A: case 0xFF1B: case 0xFF1C: case 0xFF1D: case 0xFF1E:
+        case 0xFF1F:  // Unused
         case 0xFF20: case 0xFF21: case 0xFF22: case 0xFF23:
         case 0xFF24: case 0xFF25: case 0xFF26:
+        case 0xFF27: case 0xFF28: case 0xFF29: case 0xFF2A:  // Unused
+        case 0xFF2B: case 0xFF2C: case 0xFF2D: case 0xFF2E: case 0xFF2F:  // Unused
+            // Update DIV bit 12 signal to APU (for skip_div_event glitch on power-on)
+            apu->SetDivBit12High((timer->GetDIVCounter() & 0x1000) != 0);
             apu->WriteRegister(addr, value);
             break;
         
@@ -296,10 +307,11 @@ void Emulator::TickComponents(uint8_t cycles) {
     // Step Timer
     timer->Step(cycles);
     
-    // Check if DIV bit 4 fell (512 Hz signal for APU)
-    if (timer->DidDivBit4Fall()) {
+    // Check if DIV bit 12 fell (512 Hz signal for APU frame sequencer)
+    // Per SameBoy: apu_bit = 0x1000 for normal speed DMG
+    if (timer->DidDivBit12Fall()) {
         apu->ClockFrameSequencer();
-        timer->ClearDivBit4Fall();
+        timer->ClearDivBit12Fall();
     }
     
     // Step APU
@@ -419,6 +431,10 @@ bool Emulator::HasAudioSample() const {
 
 void Emulator::ClearAudioSample() {
     apu->ClearSampleReady();
+}
+
+void Emulator::ConnectAudioBuffer(AudioBuffer* buffer) {
+    apu->SetAudioBuffer(buffer);
 }
 
 void Emulator::SetButton(uint8_t button, bool pressed) {

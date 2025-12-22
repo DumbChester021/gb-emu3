@@ -17,6 +17,7 @@ class DMA;
 class Cartridge;
 class InterruptController;
 class BootROM;
+class AudioBuffer;
 
 /**
  * Emulator - The "Motherboard" / LR35902 SoC Simulation
@@ -69,6 +70,7 @@ public:
     void GetAudioSample(float& left, float& right) const;
     bool HasAudioSample() const;
     void ClearAudioSample();
+    void ConnectAudioBuffer(AudioBuffer* buffer);
     
     // === Input (directly exposed to Joypad) ===
     void SetButton(uint8_t button, bool pressed);

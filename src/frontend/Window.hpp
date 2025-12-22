@@ -7,12 +7,15 @@
 #include <future>
 #include <atomic>
 
+class AudioBuffer;
+
 /**
  * Frontend Window - SDL2 Window and Rendering
  * 
  * Handles:
  * - Window creation and management
  * - Framebuffer display (160x144 scaled)
+ * - Audio output via SDL
  * - File dialog for ROM loading
  * - ROM info display
  */
@@ -23,6 +26,10 @@ public:
     
     // Initialize SDL2 and create window
     bool Init(const std::string& title, int scale = 4);
+    
+    // Initialize audio with buffer connection
+    bool InitAudio(AudioBuffer* buffer);
+    void CloseAudio();
     
     // Display framebuffer (2-bit color indices)
     void RenderFrame(const uint8_t* framebuffer);
@@ -84,5 +91,10 @@ private:
     std::array<uint32_t, 160 * 144> pixels;
     
     bool quit_requested;
+    
+    // Audio
+    SDL_AudioDeviceID audio_device = 0;
+    AudioBuffer* audio_buffer = nullptr;
+    static void AudioCallback(void* userdata, uint8_t* stream, int len);
 };
 

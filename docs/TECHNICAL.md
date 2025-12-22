@@ -241,6 +241,72 @@ TIMA Overflow:
 
 ---
 
+## APU Hardware Accuracy
+
+The APU implementation follows SameBoy's hardware-verified behavior:
+
+### Frame Sequencer (512 Hz)
+
+| Feature | Status | SameBoy Reference |
+|---------|--------|-------------------|
+| DIV bit 12 falling edge clocking | ✅ | Lines 295-302 |
+| Power-on frame sequencer reset | ✅ | Lines 1310-1315 |
+| Skip first DIV event if bit already high | ✅ | Lines 1283-1287 |
+
+### Channel 1 Sweep
+
+| Feature | Status | SameBoy Reference |
+|---------|--------|-------------------|
+| Overflow check on trigger | ✅ | Lines 1466-1481 |
+| Second overflow check after frequency update | ✅ | Lines 790-815 |
+| Negate mode lockout (disabling negate kills channel) | ✅ | Lines 1377-1388 |
+| Sweep timer reload uses 8 when period is 0 | ✅ | Line 1464 |
+
+### Trigger Behavior
+
+| Feature | Status | SameBoy Reference |
+|---------|--------|-------------------|
+| DAC must be enabled to enable channel | ✅ | Lines 1442-1447 |
+| Length counter reloads to max only if 0 | ✅ | Lines 1448-1459 |
+| Length enable set to false on reload (un-freeze) | ✅ | Line 1459 |
+| Wave trigger +3 cycle delay | ✅ | Line 1586 |
+
+### Wave Channel (CH3)
+
+| Feature | Status | SameBoy Reference |
+|---------|--------|-------------------|
+| DMG wave RAM corruption on re-trigger | ✅ | Lines 1550-1574 |
+| wave_form_just_read 1-cycle access window | ⏳ | Lines 910-929 |
+| Read returns current sample byte in window | ⏳ | Lines 1051-1058 |
+
+### DMG Length Counter Survival
+
+| Feature | Status | SameBoy Reference |
+|---------|--------|-------------------|
+| Length counters preserved on APU power cycle | ✅ | Lines 1291-1316 |
+| NRx1 writes allowed when APU powered off | ✅ | Lines 1257-1266 |
+
+### Blargg dmg_sound Results
+
+| Test | Status |
+|------|--------|
+| 01-registers | ✅ |
+| 02-len ctr | ✅ |
+| 03-trigger | ✅ |
+| 04-sweep | ✅ |
+| 05-sweep details | ✅ |
+| 06-overflow on trigger | ✅ |
+| 07-len sweep period sync | ✅ |
+| 08-len ctr during power | ✅ |
+| 09-wave read while on | ⏳ |
+| 10-wave trigger while on | ⏳ |
+| 11-regs after power | ✅ |
+| 12-wave write while on | ⏳ |
+
+**9/12 tests passing** - Wave channel timing (09, 10, 12) requires sub-M-cycle precision.
+
+---
+
 ## Test Results
 
 ### Blargg cpu_instrs - 11/11 PASSED ✅
