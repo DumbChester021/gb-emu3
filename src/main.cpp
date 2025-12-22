@@ -3,6 +3,7 @@
 #include <string>
 #include <chrono>
 #include <thread>
+#include <iomanip>
 
 #include "Emulator.hpp"
 #include "frontend/Window.hpp"
@@ -159,18 +160,42 @@ int RunGUI(Emulator& emu, Window& window, const std::string& rom_info) {
     std::cout << "Controls: Arrows = D-Pad, Z = A, X = B, RShift = Select, Enter = Start\n";
     std::cout << "Press ESC to quit\n\n";
     
+    // FPS tracking
     int frame_count = 0;
+    int fps_frame_count = 0;
+    auto fps_start = std::chrono::high_resolution_clock::now();
+    
+    // Frame timing for 59.7275 Hz (DMG refresh rate)
+    // 70224 T-cycles per frame at 4.194304 MHz = 16.742706... ms per frame
+    constexpr auto FRAME_DURATION = std::chrono::nanoseconds(16742706);
+    auto frame_start = std::chrono::high_resolution_clock::now();
     
     while (window.ProcessEvents()) {
         emu.RunFrame();
+        frame_count++;
+        fps_frame_count++;
         
-        // Debug: print PC every second
-        if (++frame_count % 60 == 0) {
-            std::cerr << "[Frame " << frame_count << "] PC=$" 
-                      << std::hex << emu.GetPC() << std::dec << std::endl;
+        // FPS tracking: print every second
+        auto now = std::chrono::high_resolution_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - fps_start);
+        if (elapsed.count() >= 1000) {
+            double fps = fps_frame_count * 1000.0 / elapsed.count();
+            std::cerr << "[FPS: " << std::fixed << std::setprecision(1) << fps << "] "
+                      << "PC=$" << std::hex << emu.GetPC() << std::dec << std::endl;
+            fps_frame_count = 0;
+            fps_start = now;
         }
         
         window.RenderFrame(emu.GetFramebuffer());
+        
+        // Software frame limiter for 59.7275 Hz
+        // VSYNC may not work on all systems, so we add this fallback
+        auto frame_end = std::chrono::high_resolution_clock::now();
+        auto frame_elapsed = frame_end - frame_start;
+        if (frame_elapsed < FRAME_DURATION) {
+            std::this_thread::sleep_for(FRAME_DURATION - frame_elapsed);
+        }
+        frame_start = std::chrono::high_resolution_clock::now();
         
         // Serial output to console
         while (emu.IsSerialTransferComplete()) {
