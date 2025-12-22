@@ -250,6 +250,18 @@ bool Emulator::LoadBootROM(const std::string& path) {
     return false;
 }
 
+bool Emulator::LoadSave(const std::string& path) {
+    return cartridge->LoadSave(path);
+}
+
+bool Emulator::SaveRAM(const std::string& path) const {
+    return cartridge->SaveRAM(path);
+}
+
+bool Emulator::HasBattery() const {
+    return cartridge->HasBattery();
+}
+
 void Emulator::Reset() {
     // Reset CPU with proper boot ROM state
     // If boot ROM is enabled, PC starts at 0; otherwise PC starts at $0100

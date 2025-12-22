@@ -99,6 +99,11 @@ public:
     // Check if boot ROM is still running
     bool IsBootROMActive() const;
     
+    // === Save/Load Battery-Backed RAM ===
+    bool LoadSave(const std::string& path);
+    bool SaveRAM(const std::string& path) const;
+    bool HasBattery() const;
+    
     // Set Mooneye test result callback (passes to CPU)
     void SetMooneyeCallback(std::function<void(bool)> callback);
     

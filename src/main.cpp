@@ -147,7 +147,7 @@ int RunHeadless(Emulator& emu, uint64_t max_cycles, const std::string& dump_path
     return 0;
 }
 
-int RunGUI(Emulator& emu, Window& window, const std::string& rom_info) {
+int RunGUI(Emulator& emu, Window& window, const std::string& rom_info, const std::string& save_path) {
     window.DisplayROMInfo(rom_info);
     
     // Initialize audio
@@ -213,6 +213,15 @@ int RunGUI(Emulator& emu, Window& window, const std::string& rom_info) {
         emu.SetButton(1, window.IsKeyPressed(SDL_SCANCODE_X));
         emu.SetButton(2, window.IsKeyPressed(SDL_SCANCODE_RSHIFT));
         emu.SetButton(3, window.IsKeyPressed(SDL_SCANCODE_RETURN));
+    }
+    
+    // Save battery-backed RAM on exit
+    if (emu.HasBattery() && !save_path.empty()) {
+        if (emu.SaveRAM(save_path)) {
+            std::cout << "Saved to: " << save_path << "\n";
+        } else {
+            std::cerr << "Failed to save: " << save_path << "\n";
+        }
     }
     
     return 0;
@@ -298,11 +307,27 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
+    // Calculate save path (replace .gb/.gbc with .sav)
+    std::string save_path = args.rom_path;
+    size_t dot_pos = save_path.rfind('.');
+    if (dot_pos != std::string::npos) {
+        save_path = save_path.substr(0, dot_pos) + ".sav";
+    } else {
+        save_path += ".sav";
+    }
+    
+    // Load existing save if battery-backed
+    if (emu.HasBattery()) {
+        if (emu.LoadSave(save_path)) {
+            std::cout << "Loaded save: " << save_path << "\n";
+        }
+    }
+    
     emu.Reset();
     
     if (args.headless) {
         return RunHeadless(emu, args.max_cycles, args.dump_screen_path);
     } else {
-        return RunGUI(emu, window, rom_info);
+        return RunGUI(emu, window, rom_info, save_path);
     }
 }
