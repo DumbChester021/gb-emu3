@@ -52,7 +52,7 @@ void PPU::Reset(bool bootRomEnabled) {
     
     // Pixel output
     lcd_x = 0;
-    discard_pixels = 0;
+    position_in_line = 0;
     
     // Sprites
     sprite_count = 0;
@@ -93,17 +93,19 @@ void PPU::StepOAMScan() {
     // Mode 2 interrupt fires 1 T-cycle BEFORE STAT mode bits change
     // At dot 0: mode_for_interrupt=2, but STAT mode bits still 0
     // At dot 1: STAT mode bits become 2
-    if (dot_counter == 0 && ly != 0) {
-        // Fire Mode 2 interrupt while STAT mode bits still show 0 (HBLANK)
-        // The 'mode' variable already is OAM_SCAN internally, but we'll handle
-        // the STAT read to return 0 at dot 0 via mode_for_interrupt
-        mode_for_interrupt = 2;
-        CheckStatInterrupt();
-        
-        // Per SameBoy display.c line 517-519:
-        // Set wy_triggered when LY == WY (this persists for rest of frame)
+    if (dot_counter == 0) {
+        // Per SameBoy display.c lines 508-521 (wy_check):
+        // Set wy_triggered when LY == WY at the start of each line
+        // This check happens for EVERY line including line 0
         if (IsWindowEnabled() && ly == wy) {
             window_triggered = true;
+        }
+        
+        // Fire Mode 2 interrupt (only for lines != 0)
+        // Line 0 has special handling in VBlank/HBlank transitions
+        if (ly != 0) {
+            mode_for_interrupt = 2;
+            CheckStatInterrupt();
         }
     }
     
@@ -172,14 +174,20 @@ void PPU::StepOAMScan() {
 // === Mode 3: Pixel Transfer ===
 // Per Pan Docs: Fetcher runs at 2 dots per step, FIFO pops at 1 pixel per dot
 void PPU::StepPixelTransfer() {
-    // Check for sprite at current X (before popping)
+    // Per SameBoy display.c x_for_object_match:
+    // Sprite matching uses position_in_line + 8
+    // This allows matching sprites at X < 8 during the discard phase (when position_in_line is negative)
+    uint8_t x_for_match = (position_in_line + 8) & 0xFF;
+    // Clamp to 0 if we'd wrap around (position_in_line < -8)
+    if (position_in_line < -8) x_for_match = 0;
+    
+    // Check for sprite at current position (before popping)
     // Per SameBoy: process sprites from end of array (lowest X) first
     // Array is sorted with highest X first, so iterate backwards to get lowest X
     if (!fetching_sprite && IsSpritesEnabled()) {
         for (int i = sprite_count - 1; i >= 0; i--) {
-            if (scanline_sprites[i].x != 0 && 
-                lcd_x + 8 >= scanline_sprites[i].x && 
-                lcd_x + 8 < scanline_sprites[i].x + 8) {
+            // Match when sprite X equals our current position (position_in_line + 8)
+            if (scanline_sprites[i].x != 0 && scanline_sprites[i].x == x_for_match) {
                 // Start sprite fetch for this sprite
                 sprite_index = i;
                 fetching_sprite = true;
@@ -203,18 +211,20 @@ void PPU::StepPixelTransfer() {
     }
     
     // Pop pixel from FIFO if it has data
-    // Per Pan Docs: LCD_X only advances if background FIFO has data
+    // Per Pan Docs: pixels pop at 1 per dot when FIFO has data
     if (!fetching_sprite && bg_fifo_size > 0) {
-        // Discard SCX % 8 pixels at start of line
-        if (discard_pixels > 0) {
+        if (position_in_line < 0) {
+            // Discard phase: pop pixels but don't render to screen
             PopBGPixel();
             if (sprite_fifo_size > 0) PopSpritePixel();
-            discard_pixels--;
+            position_in_line++;
         } else {
+            // Visible phase: render to screen
             // Only increment lcd_x if a pixel was actually rendered
             // Window trigger returns false and doesn't render - we'll render at same lcd_x once window data is ready
             if (RenderPixel()) {
                 lcd_x++;
+                position_in_line++;
                 
                 if (lcd_x >= 160) {
                     mode = HBLANK;
@@ -312,8 +322,9 @@ void PPU::InitFetcher() {
     fetcher_x = 0;
     fetcher_window = false;
     lcd_x = 0;
-    // Discard the 8 junk pixels + SCX fine scroll
-    discard_pixels = 8 + (scx & 7);
+    // Per SameBoy: position_in_line starts negative
+    // -8 for the junk pixels, minus SCX fine scroll
+    position_in_line = -8 - (scx & 7);
     sprite_index = 0;
     fetching_sprite = false;
 }

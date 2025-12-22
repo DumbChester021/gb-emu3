@@ -378,11 +378,19 @@ The PPU uses a hardware-accurate pixel FIFO renderer:
 | Sprites (8x8, 8x16) | ✅ Works |
 | Sprite X-priority | ✅ Per SameBoy (insertion sort) |
 | Sprite X-flip | ✅ XOR-based flip per SameBoy |
+| Sprite left edge (X < 8) | ✅ Uses `position_in_line` for proper clipping |
 | Window layer | ✅ WX/WY trigger correct |
 | Mode state machine | ✅ Correct timing |
 | OAM scan | ✅ 10 sprite limit |
 | Sprite FIFO overlay | ✅ 8 transparent slots + overlay |
 | Fine SCX scrolling | ✅ Works |
+
+#### Position Tracking (Per SameBoy)
+
+The PPU uses `position_in_line` (a signed counter) for accurate sprite matching:
+- Starts at `-8 - (SCX & 7)` at Mode 3 start
+- Sprites at X < 8 are matched during the "discard phase" (when position_in_line is negative)
+- This enables correct partial rendering of sprites at the left screen edge
 
 #### Mode 3 Transition Timing
 

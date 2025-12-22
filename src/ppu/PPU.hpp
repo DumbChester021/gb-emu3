@@ -149,7 +149,8 @@ private:
     
     // === Pixel Output State ===
     uint8_t lcd_x;              // Current LCD X (0-159)
-    uint8_t discard_pixels;     // SCX % 8 pixels to discard
+    int16_t position_in_line;   // Per SameBoy: internal position, starts negative (-8 to -15)
+                                // Used for sprite X matching at left edge
     
     // === OAM Scan Results ===
     std::array<SpriteEntry, 10> scanline_sprites;
