@@ -210,6 +210,26 @@ void PPU::StepPixelTransfer() {
         AdvanceFetcher();
     }
     
+    // Per SameBoy display.c line 1897: Window trigger check uses position_in_line + 7
+    // This must happen even during the discard phase (when position_in_line is negative)
+    // WX=7 with SCX=0 should trigger at position_in_line=0 (first visible pixel)
+    if (!fetching_sprite && bg_fifo_size > 0 && !fetcher_window && IsWindowEnabled() && window_triggered) {
+        uint8_t wx_match = (position_in_line + 7) & 0xFF;
+        if (wx < 166 && wx == wx_match) {
+            // Window trigger!
+            window_line++;
+            fetcher_window = true;
+            window_active = true;
+            // Per SameBoy line 1915: only clear BG FIFO, NOT sprite FIFO
+            bg_fifo_head = bg_fifo_size = 0;
+            fetcher_step = FetcherStep::GET_TILE;
+            fetcher_dots = 0;
+            fetcher_x = 0;
+            // Don't pop or render - window just triggered, fetcher needs to restart
+            return;
+        }
+    }
+    
     // Pop pixel from FIFO if it has data
     // Per Pan Docs: pixels pop at 1 per dot when FIFO has data
     if (!fetching_sprite && bg_fifo_size > 0) {
@@ -220,8 +240,7 @@ void PPU::StepPixelTransfer() {
             position_in_line++;
         } else {
             // Visible phase: render to screen
-            // Only increment lcd_x if a pixel was actually rendered
-            // Window trigger returns false and doesn't render - we'll render at same lcd_x once window data is ready
+            // RenderPixel returns false if window just triggered (no pixel rendered)
             if (RenderPixel()) {
                 lcd_x++;
                 position_in_line++;
@@ -489,23 +508,8 @@ PPU::FIFOPixel PPU::PopSpritePixel() {
 }
 
 bool PPU::RenderPixel() {
-    // Window trigger check - must be BEFORE FIFO pops
-    // Per SameBoy display.c line 1897: window activates when WX == position_in_line + 7
-    // Per SameBoy: requires window_triggered (wy_triggered) to be set
-    // Per reference PPU line 1189: WX must be < 166 for window to trigger
-    if (!fetcher_window && IsWindowEnabled() && window_triggered && 
-        wx < 166 && lcd_x + 7 == wx) {
-        // Per reference PPU line 1191: Increment window_line when window triggers
-        window_line++;
-        fetcher_window = true;
-        window_active = true;
-        // Per SameBoy line 1915: only clear BG FIFO, NOT sprite FIFO
-        bg_fifo_head = bg_fifo_size = 0;
-        fetcher_step = FetcherStep::GET_TILE;
-        fetcher_dots = 0;
-        fetcher_x = 0;
-        return false;  // Don't increment lcd_x - no pixel rendered yet
-    }
+    // Window trigger is now checked in StepPixelTransfer using position_in_line
+    // This function just renders the pixel
     
     FIFOPixel bg = PopBGPixel();
     FIFOPixel obj = {0, 0, 0, 0};
