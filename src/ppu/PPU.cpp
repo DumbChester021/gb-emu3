@@ -197,22 +197,13 @@ void PPU::StepPixelTransfer() {
         }
     }
     
-    // Sprite fetch: per SameBoy, must wait for BG fetcher to reach certain state first
-    // This creates a variable penalty based on where the fetcher is in its cycle
+    // Sprite fetch pauses BG fetcher
     if (fetching_sprite) {
-        // Phase 1: Wait for BG fetcher to be in GET_TILE_DATA_HIGH state with FIFO data
-        // Per SameBoy display.c lines 1956-1962
-        if (fetcher_step < FetcherStep::GET_TILE_DATA_HIGH || bg_fifo_size == 0) {
-            // Continue advancing BG fetcher while waiting
-            AdvanceFetcher();
-        } else {
-            // Phase 2: Actual sprite fetch (6 cycles fixed after fetcher is ready)
-            fetcher_dots++;
-            if (fetcher_dots >= 6) {
-                FetchSprite();
-                scanline_sprites[sprite_index].x = 0;  // Mark processed
-                fetching_sprite = false;
-            }
+        fetcher_dots++;
+        if (fetcher_dots >= 6) {  // 6 dots for sprite fetch per Pan Docs
+            FetchSprite();
+            scanline_sprites[sprite_index].x = 0;  // Mark processed
+            fetching_sprite = false;
         }
     } else {
         // Run BG fetcher
