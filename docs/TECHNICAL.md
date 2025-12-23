@@ -191,7 +191,7 @@ gb-emu3/
 | Bus | ✅ | ✅ Complete | Full routing |
 | Memory | ✅ | ✅ Complete | WRAM/HRAM |
 | DMA | ✅ | ✅ Complete | Per-cycle |
-| Cartridge | ✅ | ✅ Complete | MBC1-5, battery saves, dirty tracking |
+| Cartridge | ✅ | ✅ Complete | MBC1-5, RTC (MBC3), battery saves, dirty tracking |
 | Boot ROM | ✅ | ✅ Complete | Overlay |
 | Frontend | ✅ | ✅ Complete | SDL2, async file dialog |
 

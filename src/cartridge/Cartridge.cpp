@@ -7,6 +7,7 @@
 #include <iomanip>
 #include <sstream>
 #include <filesystem>
+#include <ctime>
 
 // Nintendo logo for validation (first 24 bytes shown)
 static constexpr uint8_t NINTENDO_LOGO[] = {
@@ -308,20 +309,23 @@ static const char* GetLicensee(uint8_t old_code, const char* new_code) {
 
 Cartridge::Cartridge()
     : ram_enabled(false)
+    , ram_dirty(false)
     , mbc_type(0)
     , rom_bank(1)
     , ram_bank(0)
     , ram_bank_mode(false)
     , mbc1_multicart(false)
+    , last_rtc_second(0)
+    , rtc_latch_register(0)
     , cartridge_type(0)
     , rom_size_code(0)
     , ram_size_code(0)
     , has_battery(false)
     , has_timer(false)
     , rom_loaded(false)
-    , ram_dirty(false)
 {
-    rtc = {};
+    rtc_real = {};
+    rtc_latched = {};
 }
 
 Cartridge::~Cartridge() = default;
@@ -661,11 +665,14 @@ void Cartridge::WriteROM(uint16_t addr, uint8_t value) {
                 // RAM Bank / RTC Register Select
                 ram_bank = value;
             } else {
-                // Latch Clock Data
-                if (rtc.latch_register == 0 && value == 1) {
-                    rtc.latched = !rtc.latched;
+                // Latch Clock Data - writing 0 then 1 latches current RTC values
+                if (rtc_latch_register == 0 && value == 1) {
+                    // Update RTC from system time before latching
+                    UpdateRTC();
+                    // Copy real values to latched values
+                    rtc_latched = rtc_real;
                 }
-                rtc.latch_register = value;
+                rtc_latch_register = value;
             }
             break;
             
@@ -692,14 +699,15 @@ uint8_t Cartridge::ReadRAM(uint16_t addr) const {
         return 0xFF;
     }
     
-    // MBC3 RTC registers
+    // MBC3 RTC registers - read from LATCHED values (per hardware)
+    // Games latch the RTC, then read the frozen snapshot
     if (mbc_type == 3 && ram_bank >= 0x08 && ram_bank <= 0x0C) {
         switch (ram_bank) {
-            case 0x08: return rtc.seconds;
-            case 0x09: return rtc.minutes;
-            case 0x0A: return rtc.hours;
-            case 0x0B: return rtc.days_low;
-            case 0x0C: return rtc.days_high;
+            case 0x08: return rtc_latched.seconds;
+            case 0x09: return rtc_latched.minutes;
+            case 0x0A: return rtc_latched.hours;
+            case 0x0B: return rtc_latched.days_low;
+            case 0x0C: return rtc_latched.days_high;
         }
         return 0xFF;
     }
@@ -720,15 +728,19 @@ void Cartridge::WriteRAM(uint16_t addr, uint8_t value) {
         return;
     }
     
-    // MBC3 RTC registers
+    // MBC3 RTC registers - write to REAL values
+    // When game sets the clock, we update rtc_real and reset our time tracking
     if (mbc_type == 3 && ram_bank >= 0x08 && ram_bank <= 0x0C) {
         switch (ram_bank) {
-            case 0x08: rtc.seconds = value; break;
-            case 0x09: rtc.minutes = value; break;
-            case 0x0A: rtc.hours = value; break;
-            case 0x0B: rtc.days_low = value; break;
-            case 0x0C: rtc.days_high = value; break;
+            case 0x08: rtc_real.seconds = value & 0x3F; break;  // 0-59
+            case 0x09: rtc_real.minutes = value & 0x3F; break;  // 0-59
+            case 0x0A: rtc_real.hours = value & 0x1F; break;    // 0-23
+            case 0x0B: rtc_real.days_low = value; break;
+            case 0x0C: rtc_real.days_high = value & 0xC1; break; // Only bits 0, 6, 7
         }
+        // When clock is written, reset our time tracking
+        last_rtc_second = std::time(nullptr);
+        ram_dirty = true;  // RTC was modified
         return;
     }
     
@@ -847,10 +859,83 @@ uint32_t Cartridge::GetRAMOffset(uint16_t addr) const {
     return (bank * 0x2000) + (addr - 0xA000);
 }
 
+// === RTC Time Sync ===
+// Updates RTC registers from system time elapsed since last sync
+void Cartridge::UpdateRTC() const {
+    if (!has_timer) return;
+    
+    // Check if RTC is halted (bit 6 of days_high)
+    if (rtc_real.days_high & 0x40) return;
+    
+    int64_t now = std::time(nullptr);
+    if (last_rtc_second == 0) {
+        // First time - just record current time
+        last_rtc_second = now;
+        return;
+    }
+    
+    int64_t elapsed = now - last_rtc_second;
+    if (elapsed <= 0) return;
+    
+    last_rtc_second = now;
+    
+    // Add elapsed seconds to RTC
+    int64_t seconds = rtc_real.seconds + elapsed;
+    rtc_real.seconds = seconds % 60;
+    
+    int64_t minutes = rtc_real.minutes + (seconds / 60);
+    rtc_real.minutes = minutes % 60;
+    
+    int64_t hours = rtc_real.hours + (minutes / 60);
+    rtc_real.hours = hours % 24;
+    
+    int64_t days = ((rtc_real.days_high & 0x01) << 8) | rtc_real.days_low;
+    days += hours / 24;
+    
+    rtc_real.days_low = days & 0xFF;
+    rtc_real.days_high = (rtc_real.days_high & 0xC0) | ((days >> 8) & 0x01);
+    
+    // Day counter overflow (> 511 days)
+    if (days > 511) {
+        rtc_real.days_high |= 0x80;  // Set carry flag
+        rtc_real.days_low = 0;
+        rtc_real.days_high &= ~0x01; // Clear day MSB
+    }
+}
+
 // === Save/Load ===
 
+// RTC save structure (VBA-compatible 64-bit timestamp format)
+#pragma pack(push, 1)
+struct RTCSaveData {
+    uint8_t seconds;
+    uint8_t padding1[3];
+    uint8_t minutes;
+    uint8_t padding2[3];
+    uint8_t hours;
+    uint8_t padding3[3];
+    uint8_t days;
+    uint8_t padding4[3];
+    uint8_t high;
+    uint8_t padding5[3];
+    // Latched values
+    uint8_t latched_seconds;
+    uint8_t lpadding1[3];
+    uint8_t latched_minutes;
+    uint8_t lpadding2[3];
+    uint8_t latched_hours;
+    uint8_t lpadding3[3];
+    uint8_t latched_days;
+    uint8_t lpadding4[3];
+    uint8_t latched_high;
+    uint8_t lpadding5[3];
+    // Timestamp
+    int64_t last_rtc_second;
+};
+#pragma pack(pop)
+
 bool Cartridge::LoadSave(const std::string& path) {
-    if (!has_battery || ram.empty()) {
+    if (!has_battery) {
         return false;
     }
     
@@ -859,13 +944,53 @@ bool Cartridge::LoadSave(const std::string& path) {
         return false;
     }
     
-    file.read(reinterpret_cast<char*>(ram.data()), ram.size());
-    return file.good();
+    // Get file size
+    file.seekg(0, std::ios::end);
+    size_t file_size = file.tellg();
+    file.seekg(0, std::ios::beg);
+    
+    // Load RAM
+    if (!ram.empty()) {
+        file.read(reinterpret_cast<char*>(ram.data()), std::min(ram.size(), file_size));
+    }
+    
+    // Load RTC if present (MBC3 with timer)
+    if (has_timer && file_size > ram.size()) {
+        RTCSaveData rtc_save = {};
+        file.read(reinterpret_cast<char*>(&rtc_save), sizeof(rtc_save));
+        
+        rtc_real.seconds = rtc_save.seconds;
+        rtc_real.minutes = rtc_save.minutes;
+        rtc_real.hours = rtc_save.hours;
+        rtc_real.days_low = rtc_save.days;
+        rtc_real.days_high = rtc_save.high;
+        
+        rtc_latched.seconds = rtc_save.latched_seconds;
+        rtc_latched.minutes = rtc_save.latched_minutes;
+        rtc_latched.hours = rtc_save.latched_hours;
+        rtc_latched.days_low = rtc_save.latched_days;
+        rtc_latched.days_high = rtc_save.latched_high;
+        
+        last_rtc_second = rtc_save.last_rtc_second;
+        
+        // Update RTC to current time if save is from the past
+        if (last_rtc_second > 0 && last_rtc_second < std::time(nullptr)) {
+            UpdateRTC();
+        }
+    }
+    
+    ram_dirty = false;  // Just loaded, not dirty
+    return file.good() || file.eof();  // EOF is OK if we read exactly the right amount
 }
 
 bool Cartridge::SaveRAM(const std::string& path) const {
-    if (!has_battery || ram.empty()) {
+    if (!has_battery) {
         return false;
+    }
+    
+    // Optimization: Only save if dirty
+    if (!ram_dirty) {
+        return true;  // Nothing to save, but not an error
     }
     
     std::ofstream file(path, std::ios::binary);
@@ -873,6 +998,36 @@ bool Cartridge::SaveRAM(const std::string& path) const {
         return false;
     }
     
-    file.write(reinterpret_cast<const char*>(ram.data()), ram.size());
+    // Save RAM
+    if (!ram.empty()) {
+        file.write(reinterpret_cast<const char*>(ram.data()), ram.size());
+    }
+    
+    // Save RTC if present (MBC3 with timer)
+    if (has_timer) {
+        // Sync RTC before saving
+        UpdateRTC();
+        
+        RTCSaveData rtc_save = {};
+        rtc_save.seconds = rtc_real.seconds;
+        rtc_save.minutes = rtc_real.minutes;
+        rtc_save.hours = rtc_real.hours;
+        rtc_save.days = rtc_real.days_low;
+        rtc_save.high = rtc_real.days_high;
+        
+        rtc_save.latched_seconds = rtc_latched.seconds;
+        rtc_save.latched_minutes = rtc_latched.minutes;
+        rtc_save.latched_hours = rtc_latched.hours;
+        rtc_save.latched_days = rtc_latched.days_low;
+        rtc_save.latched_high = rtc_latched.days_high;
+        
+        rtc_save.last_rtc_second = last_rtc_second;
+        
+        file.write(reinterpret_cast<const char*>(&rtc_save), sizeof(rtc_save));
+    }
+    
+    if (file.good()) {
+        ram_dirty = false;  // Successfully saved
+    }
     return file.good();
 }

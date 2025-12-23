@@ -69,15 +69,21 @@ private:
     bool mbc1_multicart;        // MBC1M: Multicart mode (different BANK2 wiring)
     
     // MBC3 RTC (directly exposed)
-    struct RTC {
-        uint8_t seconds;
-        uint8_t minutes;
-        uint8_t hours;
-        uint8_t days_low;
-        uint8_t days_high;      // Includes halt and carry flags
-        bool latched;
-        uint8_t latch_register;
-    } rtc;
+    // Per hardware: RTC runs from real system time, latched values frozen when latch triggered
+    struct RTCRegisters {
+        uint8_t seconds;    // 0-59
+        uint8_t minutes;    // 0-59
+        uint8_t hours;      // 0-23
+        uint8_t days_low;   // Lower 8 bits of day counter
+        uint8_t days_high;  // Bit 0: Day counter MSB, Bit 6: Halt, Bit 7: Day carry
+    };
+    mutable RTCRegisters rtc_real;      // Current RTC values (synced with system time)
+    mutable RTCRegisters rtc_latched;   // Latched values (frozen on latch)
+    mutable int64_t last_rtc_second;    // Unix timestamp when RTC was last synced
+    uint8_t rtc_latch_register;         // For detecting 0->1 latch transition
+    
+    // Update RTC from system time
+    void UpdateRTC() const;
     
     // === ROM Header Info (directly exposed, parsed on load) ===
     std::string title;
