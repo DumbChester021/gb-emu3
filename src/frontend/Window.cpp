@@ -161,12 +161,6 @@ bool Window::ProcessEvents() {
                 if (event.key.keysym.scancode < SDL_NUM_SCANCODES) {
                     keys_current[event.key.keysym.scancode] = true;
                 }
-                
-                // Handle Escape to quit
-                if (event.key.keysym.sym == SDLK_ESCAPE) {
-                    quit_requested = true;
-                    return false;
-                }
                 break;
                 
             case SDL_KEYUP:
