@@ -79,12 +79,14 @@ private:
     // Static function for thread
     static std::string RunZenityDialog();
     
-    // DMG color palette (classic green)
+    // SameBoy default DMG palette (from display.c line 9)
+    // Original: {{{0x08, 0x18, 0x10}, {0x39, 0x61, 0x39}, {0x84, 0xA5, 0x63}, {0xC6, 0xDE, 0x8C}}}
+    // Converted from BGR to ARGB8888
     static constexpr uint32_t PALETTE[4] = {
-        0xFF9BBC0F,  // Lightest (white)
-        0xFF8BAC0F,  // Light
-        0xFF306230,  // Dark  
-        0xFF0F380F   // Darkest (black)
+        0xFFD2E6A6,  // Lightest (SameBoy index 4, but we use as white)
+        0xFF8CAD63,  // Light
+        0xFF396139,  // Dark  
+        0xFF101808   // Darkest (black)
     };
     
     // Pixel buffer for texture update
