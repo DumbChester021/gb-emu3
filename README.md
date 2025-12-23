@@ -31,7 +31,7 @@ This emulator aims to match real DMG hardware behavior exactly:
 | **Halt** | 4/4 ✅ |
 | **EI/DI** | 4/4 ✅ |
 | **Call/Ret Timing** | 8/8 ✅ |
-| **Total Mooneye** | **85/89** (full suite) |
+| **Total Mooneye** | **85/89** (`--all` flag) |
 
 ---
 
@@ -42,6 +42,14 @@ This emulator aims to match real DMG hardware behavior exactly:
 - **Input**: Keyboard and gamepad support
 - **Save States**: Battery-backed save support
 - **Boot ROM**: Optional DMG boot ROM support
+
+### QOL Features
+- **Volume Control**: `+`/`-` keys (0-100%)
+- **Mute Toggle**: `M` key (also auto-mutes on focus loss)
+- **FPS Display**: `F3` toggle
+- **Screenshot**: `F12` (saves to `screenshots/`)
+- **Window State**: Position and size remembered
+- **Config File**: `config.ini` for persistent settings
 
 ---
 

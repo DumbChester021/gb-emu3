@@ -360,7 +360,7 @@ HALT bug correctly implemented (PC fails to increment when IME=0 with pending in
 | Halt | 4 | 4 ✅ |
 | EI/DI | 4 | 4 ✅ |
 | Call/Ret Timing | 8 | 8 ✅ |
-| PPU | 8 | 12 |
+| PPU | 8 | 12 (4 fail: timing edge cases) |
 | OAM DMA | 5 | 5 ✅ |
 | Interrupts | 2 | 2 ✅ |
 
