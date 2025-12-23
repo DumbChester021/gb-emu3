@@ -6,6 +6,8 @@
 #include <array>
 #include <future>
 #include <atomic>
+#include <deque>
+#include <vector>
 
 class AudioBuffer;
 
@@ -18,6 +20,7 @@ class AudioBuffer;
  * - Audio output via SDL
  * - File dialog for ROM loading
  * - ROM info display
+ * - QOL: Volume, mute, FPS, screenshots, notifications
  */
 class Window {
 public:
@@ -60,6 +63,33 @@ public:
     int GetWidth() const { return width; }
     int GetHeight() const { return height; }
     
+    // === QOL Features ===
+    
+    // Volume (0.0 - 1.0)
+    void SetVolume(float vol) { volume = std::max(0.0f, std::min(1.0f, vol)); }
+    float GetVolume() const { return volume; }
+    void AdjustVolume(float delta);
+    
+    // Mute
+    void SetMuted(bool m) { muted = m; }
+    bool IsMuted() const { return muted; }
+    void ToggleMute() { muted = !muted; }
+    
+    // FPS display
+    void SetShowFPS(bool show) { show_fps = show; }
+    bool GetShowFPS() const { return show_fps; }
+    void ToggleFPS() { show_fps = !show_fps; }
+    
+    // Screenshot
+    void SaveScreenshot();
+    
+    // Notifications (auto-dismiss after ~2 seconds)
+    void ShowNotification(const std::string& text);
+    
+    // Save/restore window state
+    void SaveWindowState();
+    void RestoreWindowState();
+    
 private:
     SDL_Window* window;
     SDL_Renderer* renderer;
@@ -80,17 +110,16 @@ private:
     static std::string RunZenityDialog();
     
     // SameBoy default DMG palette (from display.c line 9)
-    // Original: {{{0x08, 0x18, 0x10}, {0x39, 0x61, 0x39}, {0x84, 0xA5, 0x63}, {0xC6, 0xDE, 0x8C}}}
-    // Converted from BGR to ARGB8888
     static constexpr uint32_t PALETTE[4] = {
-        0xFFD2E6A6,  // Lightest (SameBoy index 4, but we use as white)
+        0xFFD2E6A6,  // Lightest
         0xFF8CAD63,  // Light
         0xFF396139,  // Dark  
-        0xFF101808   // Darkest (black)
+        0xFF101808   // Darkest
     };
     
     // Pixel buffer for texture update
     std::array<uint32_t, 160 * 144> pixels;
+    std::vector<uint32_t> last_framebuffer;  // For clean screenshots
     
     bool quit_requested;
     
@@ -98,5 +127,24 @@ private:
     SDL_AudioDeviceID audio_device = 0;
     AudioBuffer* audio_buffer = nullptr;
     static void AudioCallback(void* userdata, uint8_t* stream, int len);
+    
+    // === QOL State ===
+    float volume = 1.0f;
+    bool muted = false;
+    bool show_fps = false;
+    int fps_counter = 0;
+    int fps_display = 0;
+    uint32_t fps_last_time = 0;
+    
+    // Notification queue
+    struct Notification {
+        std::string text;
+        int frames_remaining;
+    };
+    std::deque<Notification> notifications;
+    
+    // Bitmap font rendering
+    static const uint8_t FONT[38][8];
+    void DrawChar(int x, int y, char c, uint32_t color);
+    void DrawString(int x, int y, const std::string& str, uint32_t color);
 };
-

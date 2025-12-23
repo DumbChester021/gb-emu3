@@ -18,6 +18,7 @@ Thumbs.db
 # Boot ROMs (Nintendo copyrighted)
 bootroms/
 
+
 # Test ROMs - obtain separately
 test_roms/
 
@@ -30,9 +31,8 @@ reference/
 mooneye_results.txt
 
 # Third-party documentation (may be copyrighted)
-docs/*.pdf
-docs/cycle_accurate.txt
-docs/gbctr.txt
+docs/*pdf
+docs/*txt
 
 # Save files
 *.sav
