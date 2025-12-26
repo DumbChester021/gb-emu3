@@ -361,3 +361,243 @@ void PPU::Step() {
 - Mooneye `lcdon_timing-GS.s` - test source with expected values
 - Pan Docs - STAT/LYC constantly compared (visible state)
 
+## CRITICAL LEARNING: Line Transition STAT Mode Bits (December 26, 2024)
+
+### Discovery from SameBoy Analysis
+
+At the start of each normal line (not line 0 after LCD enable), SameBoy does the following sequence (display.c lines 1770-1792):
+
+```
+1. GB_SLEEP(2 cycles)
+2. GB_SLEEP(1 cycle)
+3. LY = current_line                    // LY visible to CPU
+4. For line != 0: STAT &= ~3            // Mode bits = 0 (HBLANK!)
+5. GB_STAT_update()                     // Evaluate interrupts
+6. GB_SLEEP(1 cycle)                    // 1 MORE CYCLE with mode bits = 0
+7. STAT |= 2                            // NOW mode bits become 2 (OAM_SCAN)
+```
+
+### Key Insight
+
+**There is a 1-cycle window where LY shows the new line value, but STAT mode bits are STILL 0 (HBLANK)!**
+
+This is NOT a "staged visibility" problem - it's that SameBoy explicitly:
+1. Sets STAT mode bits to 0 at the moment LY changes
+2. Waits 1 cycle
+3. THEN sets STAT mode bits to 2
+
+### Why This Matters for lcdon_timing-GS
+
+At cycle 111:
+- LY reads as $01 (line 1)
+- STAT expected as $80 (mode 0 = HBLANK, no LYC match)
+- We were returning $82 (mode 2 = OAM_SCAN)
+
+The test is reading during that 1-cycle window where STAT mode is still 0!
+
+### The Correct Fix
+
+Instead of a generic "mode visibility delay", we need to:
+1. At line transition, explicitly set STAT mode bits to 0
+2. Wait 1 cycle (use a pending flag or countdown)
+3. THEN set STAT mode bits to 2
+
+This matches the SameBoy pattern of explicitly clearing and then setting the mode bits.
+
+### Implementation Notes
+
+SameBoy doesn't use a "mode_visible" abstraction. Instead, it directly manipulates `io_registers[GB_IO_STAT]` mode bits at precise cycle points. The mode bits are a direct output, not derived from internal mode.
+
+### Working Solution (December 26, 2024)
+
+After extensive debugging, the correct timing for mode visibility at line transitions was determined:
+
+**Mode visibility delay = 4 cycles for HBlank→OAM_SCAN transition**
+
+This creates the following behavior:
+- Line ends at dot 451 (or 455 for normal lines)
+- At line end: internal mode → OAM_SCAN, mode_visible stays HBLANK, delay=4
+- dot 0: delay=4 → 3 (mode_visible still HBLANK)
+- dot 1: delay=3 → 2
+- dot 2: delay=2 → 1
+- dot 3: delay=1 → 0, mode_visible → OAM_SCAN
+- dot 4+: mode_visible = OAM_SCAN (STAT shows mode 2)
+
+Test expectations for cycle 111-112:
+- cycle 111 (dot 0): expects $80 (mode 0) ✓
+- cycle 112 (dot 4): expects $82 (mode 2) ✓
+
+Other mode transitions should be **immediate** (no delay):
+- OAM_SCAN → PIXEL_TRANSFER: immediate
+- PIXEL_TRANSFER → HBLANK: immediate  
+- HBLANK → VBLANK: immediate
+
+## CRITICAL FINDING: CPU Read vs PPU Step Ordering (December 26, 2024)
+
+### The Problem
+
+Debug trace revealed that **CPU reads STAT BEFORE PPU Phase 1 runs** on the same dot:
+
+```
+STAT_RD: ly=0 dot=0 ly_cmp=0 lyc=0 stat_b2=1 result=$84   <- READ first (WRONG)
+PHASE1: ly=1 ly_cmp=-1 stat_b2=1                          <- Phase 1 AFTER read
+AFTER_CHECK: stat_b2=0                                     <- Bit cleared too late
+STAT_RD: ly=1 dot=0 ly_cmp=1 lyc=0 stat_b2=0 result=$80   <- Next read correct
+```
+
+### Why This Happens
+
+The pending cycles pattern works like this:
+1. CPU flushes pending cycles → PPU::Step runs for PREVIOUS cycles
+2. CPU performs memory operation (reads STAT)
+3. CPU accumulates new pending cycles
+4. PPU::Step runs for current cycle (Phase 1 updates state)
+
+This means Phase 1 state changes (LY visibility, LYC comparison) happen AFTER the CPU read on the same dot.
+
+### Required Fix
+
+**IMPLEMENTED SOLUTION (December 26, 2024):**
+
+Update visibility state at **LINE END** instead of dot 0:
+
+1. At line end (dot 451/455):
+   - Set `ly_for_comparison = (next_ly != 0) ? -1 : 0`
+   - Clear `stat &= ~0x04` directly (avoid CheckStatInterrupt to prevent IRQ side effects)
+   - Set `ly_comparator_delay = 4` to schedule Phase 2 update
+
+2. Phase 1 (dot 0):
+   - Only commit visible `ly = next_ly` and clear `ly_update_pending`
+   - DON'T update ly_for_comparison or call CheckStatInterrupt
+
+3. Phase 2 (after 4 dots):
+   - Set `ly_for_comparison = ly`
+   - Call `CheckStatInterrupt()` to update STAT bit 2 properly
+
+This ensures:
+- CPU reads at dot 0 see `ly_for_comparison=-1` (cleared at line end)  
+- CPU reads at dot 4+ see `ly_for_comparison=actual_ly` (updated by Phase 2)
+
+**Status:** 85/89 tests passing (no regressions). lcdon_timing-GS OAM/VRAM access tests in progress.
+
+---
+
+## OAM/VRAM Access Blocking (December 26, 2024)
+
+### Problem
+lcdon_timing-GS test failing on OAM and VRAM access timing. Tests expect specific blocking/unblocking at precise T-cycle boundaries.
+
+### Hardware-Accurate Implementation
+
+**Per SameBoy**: OAM/VRAM access uses explicit blocking flags, NOT mode-based checks.
+
+#### Blocking Flags Added to PPU.hpp:
+```cpp
+bool oam_read_blocked;      // OAM reads return $FF when true
+bool oam_write_blocked;     // OAM writes ignored when true
+bool vram_read_blocked;     // VRAM reads return $FF when true
+bool vram_write_blocked;    // VRAM writes ignored when true
+```
+
+#### OAM Blocking Timing:
+- **Set true**: Mode 2 entry (dot 0), lcd_just_enabled Mode 3 entry (dot 77)
+- **Set false**: HBlank entry, VBlank entry, LCD enable, LCD off
+- **Line-end**: Set `oam_read_blocked = true` at line end for non-VBlank transitions (CPU reads BEFORE PPU Step)
+
+#### VRAM Blocking Timing:
+- **Set true**: Mode 3 entry (dot 84 for normal lines, dot 77 for lcd_just_enabled)
+- **Set false**: HBlank entry, VBlank entry, LCD enable, LCD off
+- **NOT blocked during Mode 2** (only Mode 3)
+
+#### Critical Discovery: Line-End Timing Pattern
+Same issue as `ly_for_comparison`: **CPU reads at cycle 111 (dot 0 of next line) happen BEFORE PPU Step runs**.
+
+Solution: Set blocking flags at **LINE END** (dot 451/455), not dot 0:
+```cpp
+// At line end for non-VBlank transitions
+if (next_ly < 144) {
+    oam_read_blocked = true;
+    oam_write_blocked = true;
+}
+```
+
+This ensures CPU reads at dot 0 see the correct blocked state.
+
+### Test Progress
+- **STAT LYC tests**: ✅ PASSING (ly_for_comparison line-end fix)
+- **OAM access tests**: ✅ PASSING (oam_read_blocked implementation)
+- **VRAM access tests**: ✅ PASSING (vram_read_blocked at dot 76)
+
+### SOLUTION: VRAM Blocking at Dot 76
+
+**Per SameBoy display.c lines 1807-1818**: VRAM is blocked at **OAM index 37** during Mode 2.
+
+**Timing calculation**:
+- OAM scan loop: 40 entries × 2 cycles each = 80 cycles
+- After 4 initial cycles + 37 entries × 2 = 78 cycles into line
+- SameBoy cycle 78 from line start = dot 76 in our implementation
+
+**Implementation** (StepOAMScan):
+```cpp
+if (dot_counter == 76) {
+    vram_read_blocked = true;
+    vram_write_blocked = true;
+}
+```
+
+**Key insight**: VRAM blocking happens **during Mode 2** (not at Mode 3 entry), specifically when OAM scanning reaches entry 37.
+
+**Test Result**: lcdon_timing-GS.gb now **PASSING** ✅  
+**Overall**: **86/89 tests passing** (+1 from baseline)
+
+---
+
+## Summary of Key Learnings
+
+### 1. Line-End Timing Pattern (Critical Discovery)
+**When CPU reads happen BEFORE PPU Step runs**, state must be set at previous line end, not current dot:
+- Applied to: `ly_for_comparison`, STAT bit 2, `oam_read_blocked`
+- Example: CPU read at cycle 111 (dot 0 line 1) happens before PPU Step(dot 0) runs
+- Solution: Set state at dot 451/455 (line end) for visibility at next line's dot 0
+
+### 2. Hardware-Accurate Memory Access Flags
+**Don't use mode-based checks** - use explicit T-cycle timing flags:
+- Old (hacky): `if (mode == PIXEL_TRANSFER) return 0xFF;`
+- New (accurate): `if (vram_read_blocked) return 0xFF;`
+- Flags set/cleared at precise dots matching SameBoy hardware behavior
+
+### 3. OAM/VRAM Blocking Timing (DMG)
+**OAM**: Blocked during Mode 2 + Mode 3
+- Blocked at: Mode 2 entry (dot 0), lcd_just_enabled Mode 3 (dot 77), line end
+- Unblocked at: HBlank, VBlank, LCD enable/off
+
+**VRAM**: Blocked during Mode 2 (from OAM index 37) + Mode 3
+- Blocked at: dot 76 (OAM index 37), Mode 3 entry (dot 84), lcd_just_enabled (dot 77)
+- Unblocked at: HBlank, VBlank, LCD enable/off
+
+### 4. SameBoy References
+All implementations verified against SameBoy 1.0.2 `display.c`:
+- Line 1697: OAM blocking
+- Line 1701: VRAM blocking (lcd_just_enabled)
+- Line 1776: ly_for_comparison = -1
+- Line 1790: Mode 2 OAM blocking
+- Lines 1807-1818: VRAM blocking at OAM index 37
+- Line 2104: HBlank unblocking
+
+### 5. Test Suite Status
+**86/89 Mooneye tests passing**
+
+**Passing**:
+- ✅ All CPU instruction tests
+- ✅ All MBC tests (MBC1, MBC2, MBC5)
+- ✅ All timer tests
+- ✅ All interrupt timing tests
+- ✅ STAT LYC timing tests
+- ✅ **lcdon_timing-GS.gb** (STAT, OAM, VRAM access)
+
+**Remaining Failures** (unrelated to this work):
+- hblank_ly_scx_timing-GS.gb (SCX timing during HBlank)
+- intr_2_mode0_timing_sprites.gb (sprite timing)
+- lcdon_write_timing-GS.gb (write timing during LCD enable)
+
+

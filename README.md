@@ -31,7 +31,7 @@ This emulator aims to match real DMG hardware behavior exactly:
 | **Halt** | 4/4 ✅ |
 | **EI/DI** | 4/4 ✅ |
 | **Call/Ret Timing** | 8/8 ✅ |
-| **Total Mooneye** | **85/89** (`--all` flag) |
+| **Total Mooneye** | **86/89** (`--all` flag) |
 
 ---
 

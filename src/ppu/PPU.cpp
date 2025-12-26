@@ -7,6 +7,10 @@ PPU::PPU() {
 
 void PPU::Reset(bool bootRomEnabled) {
     mode = bootRomEnabled ? HBLANK : OAM_SCAN;  // LCD off starts in mode 0
+    mode_visible = mode;       // Visible mode starts in sync with internal
+    next_mode_visible = mode;  // No pending update
+    mode_visibility_delay = 0; // No pending update
+    
     dot_counter = 0;
     ly = 0;
     ly_for_comparison = 0;  // Per SameBoy: comparison value starts at 0
@@ -16,8 +20,12 @@ void PPU::Reset(bool bootRomEnabled) {
     lcd_just_enabled = false;
     first_line_after_lcd = false;
     ly_update_pending = false;
-    ly_comparator_pending = false;
+    ly_comparator_delay = 0;
     next_ly = 0;
+    oam_read_blocked = false;
+    oam_write_blocked = false;
+    vram_read_blocked = false;
+    vram_write_blocked = false;
     
     // Registers - per SameBoy: boot ROM starts with LCD off (LCDC=0)
     // Without boot ROM, start with post-boot state (LCDC=$91)
@@ -72,23 +80,40 @@ void PPU::Step(uint8_t cycles) {
     }
     
     for (int i = 0; i < cycles; i++) {
-        // PHASE 1: Commit scheduled visibility changes
-        // Visible LY updates FIRST, comparator input updates LATER
+        // ========================================
+        // PHASE 1: Commit Scheduled Visibility Changes
+        // Visible state (LY, mode) updates FIRST
+        // ========================================
         if (dot_counter == 0 && ly_update_pending) {
             ly = next_ly;  // Visible LY changes NOW
             ly_update_pending = false;
-            ly_comparator_pending = true;  // Schedule comparator update for NEXT phase
+            // Note: ly_for_comparison and STAT bit 2 were already updated at line END
+            // Phase 1 just commits the visible ly value
         }
         
-        // PHASE 2: Update comparator input (one phase after visible LY)
-        // This is the key fix: STAT LYC comparison lags behind visible LY
-        if (ly_comparator_pending) {
-            ly_for_comparison = ly;  // NOW update comparator input
-            ly_comparator_pending = false;
-            CheckStatInterrupt();  // Evaluate STAT LYC with updated comparator input
+        // Mode visibility update - uses countdown for delay
+        if (mode_visibility_delay > 0) {
+            mode_visibility_delay--;
+            if (mode_visibility_delay == 0) {
+                mode_visible = next_mode_visible;  // Visible mode changes NOW
+            }
         }
         
-        // Per Pan Docs: process at current dot, THEN increment
+        // ========================================
+        // PHASE 2: Update Comparators & STAT Bits
+        // Runs after countdown delay expires
+        // ========================================
+        if (ly_comparator_delay > 0) {
+            ly_comparator_delay--;
+            if (ly_comparator_delay == 0) {
+                ly_for_comparison = ly;  // NOW update comparator input
+                CheckStatInterrupt();  // STAT bit 2 and interrupts updated NOW
+            }
+        }
+        
+        // ========================================
+        // PHASE 3: Mode Logic & State Advancement
+        // ========================================
         switch (mode) {
             case OAM_SCAN:
                 StepOAMScan();
@@ -122,6 +147,11 @@ void PPU::StepOAMScan() {
         if (IsWindowEnabled() && ly == wy) {
             window_triggered = true;
         }
+        
+        // Per SameBoy display.c line 1790: OAM blocked at Mode 2 entry
+        // VRAM is blocked later at Mode 3 entry (line 1701), not here
+        oam_read_blocked = true;
+        oam_write_blocked = true;
         
         // Fire Mode 2 interrupt (only for lines != 0)
         // Line 0 has special handling in VBlank/HBlank transitions
@@ -178,6 +208,15 @@ void PPU::StepOAMScan() {
     //   - Mode 0 STAT at cycle 256 = my dot 252
     //   - Mode 0 interrupt at cycle 257 = my dot 253
     
+    // Per SameBoy display.c lines 1807-1818: VRAM blocked at OAM index 37 on DMG
+    // The check happens AFTER GB_SLEEP(2), so timing is:
+    //   4 cycles before loop + (38 entries * 2 cycles) = 80 cycles into line
+    //   My dot 0 = SameBoy cycle 4, so SameBoy cycle 80 = my dot 76
+    if (dot_counter == 76) {
+        vram_read_blocked = true;
+        vram_write_blocked = true;
+    }
+    
     if (dot_counter == 79) {
         // STAT mode = 3 starts at SameBoy cycle 84 = my dot 80
         // But we check at dot 79 so the change takes effect AT dot 80
@@ -189,6 +228,13 @@ void PPU::StepOAMScan() {
         // mode_3_start: SameBoy cycle 89 = my dot 85
         // Check at dot 84 so PIXEL_TRANSFER starts AT dot 85
         mode = PIXEL_TRANSFER;
+        // Immediate visibility update for OAM_SCAN→PIXEL_TRANSFER
+        mode_visible = PIXEL_TRANSFER;
+        mode_visibility_delay = 0;  // No delay needed
+        // Per SameBoy: VRAM blocked when Mode 3 starts
+        // (OAM was already blocked at Mode 2 entry)
+        vram_read_blocked = true;
+        vram_write_blocked = true;
         InitFetcher();
     }
 }
@@ -274,7 +320,15 @@ void PPU::StepPixelTransfer() {
                         fprintf(stderr, "MODE3_END ly=%d dot=%d\n", ly, dot_counter);
                     }
                     mode = HBLANK;
+                    // Immediate visibility update for PIXEL_TRANSFER→HBLANK
+                    mode_visible = HBLANK;
+                    mode_visibility_delay = 0;  // No delay needed
                     mode_for_interrupt = 0;
+                    // Per SameBoy display.c line 2104: OAM/VRAM unblocked at HBlank entry
+                    oam_read_blocked = false;
+                    oam_write_blocked = false;
+                    vram_read_blocked = false;
+                    vram_write_blocked = false;
                     CheckStatInterrupt();
                 }
             }
@@ -293,16 +347,24 @@ void PPU::StepHBlank() {
     
     if (lcd_just_enabled && ly == 0) {
         // STAT mode bits = 3 at dot 77 (latched, visible to CPU reads)
-        // Per SameBoy lines 1692-1693: update STAT register here
+        // Per SameBoy lines 1692-1693, 1696-1697, 1700-1702: update STAT and block OAM/VRAM
         if (dot_counter == 77) {
             stat = (stat & ~0x03) | PIXEL_TRANSFER;  // LATCH mode bits in STAT
+            mode_visible = PIXEL_TRANSFER;  // Also update mode_visible directly
             mode_for_interrupt = 3;
+            // Per SameBoy line 1697, 1701: OAM and VRAM blocked when Mode 3 starts
+            // For lcd_just_enabled, there's no Mode 2, so set it here
+            oam_read_blocked = true;
+            oam_write_blocked = true;
+            vram_read_blocked = true;
+            vram_write_blocked = true;
         }
         
         // Internal mode changes at dot 82 when rendering actually starts
         // Per SameBoy lines 1704-1714: mode_3_start after +2+3 more cycles
         if (dot_counter == 82) {
             mode = PIXEL_TRANSFER;
+            // mode_visible already set at dot 77
             InitFetcher();
             lcd_just_enabled = false;
         }
@@ -310,7 +372,9 @@ void PPU::StepHBlank() {
     
     // Determine line end position
     // Per SameBoy line 1690: "Mode 0 is shorter on the first line 0"
-    // Line 0 after LCD enable ends 4 dots earlier (test expects LY=1 at cycle 111 = dot 452)
+    // The +8 to cycles_for_line affects HBlank duration, not total line length
+    // Test expects LY=0 at cycle 110 (dot ~440) and LY=1 at cycle 130 (dot ~520)
+    // Line 0 ends between these cycles, around dot 451
     uint16_t line_end = first_line_after_lcd ? 451 : 455;
     
     if (dot_counter == line_end) {
@@ -321,14 +385,30 @@ void PPU::StepHBlank() {
         
         // Note: window_line is incremented when window TRIGGERS (in RenderPixel), not here
         
-        // Schedule LY update for next line start (don't update visible ly yet!)
+        // Schedule LY update for next line start
         next_ly = ly + 1;
         ly_update_pending = true;
         
-        // Update ly_for_comparison for INTERRUPT timing (fires at line boundary)
-        // But STAT bit 2 will NOT change because CheckStatInterrupt uses effective_ly
-        ly_for_comparison = ly + 1;
-        CheckStatInterrupt();  // Evaluate interrupt with internal timing
+        // KEY FIX: Update ly_for_comparison AT LINE END, not dot 0
+        // This ensures CPU reads at cycle 111 (which happen BEFORE Phase 1)
+        // see the correct ly_for_comparison value (-1 for lines != 0)
+        // Per SameBoy line 1776: ly_for_comparison = current_line ? -1 : 0
+        ly_for_comparison = (next_ly != 0) ? -1 : 0;
+        // Clear STAT bit 2 directly (don't use CheckStatInterrupt to avoid IRQ side effects)
+        // This is safe because -1 will never match any valid LYC value
+        if (ly_for_comparison == -1) {
+            stat &= ~0x04;  // Clear LYC coincidence bit
+        }
+        // Schedule Phase 2 to update ly_for_comparison to actual ly value after delay
+        ly_comparator_delay = 4;  // 4 dots: matches mode visibility timing
+        
+        // KEY FIX: Set OAM blocked AT LINE END, not dot 0 (same reason as ly_for_comparison)
+        // CPU reads at cycle 111 happen BEFORE PPU Step runs, so set it here
+        // For VBlank transition (next_ly == 144), OAM stays accessible
+        if (next_ly < 144) {
+            oam_read_blocked = true;
+            oam_write_blocked = true;
+        }
         
         // Mode transitions still happen at line end
         if (next_ly == 144) {
@@ -340,15 +420,30 @@ void PPU::StepHBlank() {
             }
             
             mode = VBLANK;
+            // Immediate visibility update for HBlank→VBlank
+            mode_visible = VBLANK;
+            mode_visibility_delay = 0;
             mode_for_interrupt = 1;  // Per SameBoy: Mode 1 interrupt check
             vblank_irq = true;
             frame_complete = true;
+            // OAM/VRAM accessible during VBlank
+            oam_read_blocked = false;
+            oam_write_blocked = false;
+            vram_read_blocked = false;
+            vram_write_blocked = false;
             CheckStatInterrupt();  // Mode 1 interrupt at VBlank entry
         } else {
-            // Per SameBoy: Mode 2 STAT interrupt fires at dot 0 with STAT mode bits still 0
-            // Internal mode is OAM_SCAN so we run StepOAMScan, but STAT read will
-            // return special value at dot 0 (handled in ReadRegister)
+            // Per SameBoy display.c lines 1782-1792:
+            // At line transition, STAT mode bits are EXPLICITLY SET TO 0 first!
+            // Timing: dots 0-3 show mode 0, dot 4+ shows mode 2
+            // Test cycle 111 (dot 0): expects $80 (mode 0)
+            // Test cycle 112 (dot 4): expects $82 (mode 2)
             mode = OAM_SCAN;
+            // Set mode_visible to HBLANK NOW (matching SameBoy STAT &= ~3)
+            // Schedule update to OAM_SCAN for 4 cycles later
+            mode_visible = HBLANK;  // IMMEDIATE: visible mode stays HBLANK
+            next_mode_visible = OAM_SCAN;
+            mode_visibility_delay = 4;  // Will become OAM_SCAN at dot 4
             mode_for_interrupt = -1;  // Wait for dot 0 to set mode_for_interrupt=2
             sprite_count = 0;
             window_active = false;
@@ -375,6 +470,10 @@ void PPU::StepVBlank() {
         // Mode transitions
         if (next_ly == 0) {
             mode = OAM_SCAN;
+            // Same 4-cycle delay as HBlank→OAM_SCAN (line 0 after VBlank)
+            mode_visible = VBLANK;  // Stay at VBlank visibility briefly
+            next_mode_visible = OAM_SCAN;
+            mode_visibility_delay = 4;
             mode_for_interrupt = 2;  // Per SameBoy: Mode 2 interrupt check
             window_line = -1;  // Per SameBoy: starts at -1, incremented when window triggers
             window_triggered = false;
@@ -603,10 +702,17 @@ void PPU::CheckStatInterrupt() {
     
     // PHASED MODEL: STAT bit 2 uses ly_for_comparison (lags behind visible ly)
     // At line boundary:
-    //   - Phase 1: visible ly = 1
+    //   - Phase 1: visible ly = 1, ly_for_comparison = -1 (no match)
     //   - Phase 2: ly_for_comparison = 1, STAT bit 2 updates
     // CPU reads between phases see: LY=1, but STAT shows no coincidence (old comparison)
-    bool lyc_match = (ly_for_comparison == lyc);
+    
+    // Per SameBoy lines 532-542: when ly_for_comparison == -1, CLEAR the bit
+    // This is different from normal case - -1 means "no comparison" which clears bit
+    bool lyc_match = false;
+    if (ly_for_comparison != -1) {
+        lyc_match = (ly_for_comparison == lyc);
+    }
+    // Always update the bit (per SameBoy: -1 clears, match sets, no-match clears)
     if (lyc_match) {
         stat |= 0x04;   // Set LY=LYC bit
     } else {
@@ -637,11 +743,9 @@ uint8_t PPU::ReadRegister(uint16_t addr) const {
     switch (addr) {
         case 0xFF40: return lcdc;
         case 0xFF41: {
-            // STAT is a VIEW of PPU state with dot-level quirks.
-            // It is NOT the authoritative source of mode, and must NOT drive interrupts.
-            // 
-            // - LCD line 0 after enable: Uses explicitly latched stat bits
-            // - Normal lines: Derived from internal mode with dot-based quirks
+            // STAGED PPU: STAT mode bits come from mode_visible, not internal mode
+            // mode_visible lags behind internal mode by 1 cycle (updated in Phase 1)
+            // This allows STAT to show the old mode for 1 cycle after internal mode changes
             
             uint8_t stat_mode;
             
@@ -649,10 +753,11 @@ uint8_t PPU::ReadRegister(uint16_t addr) const {
                 // LCD line 0 special case: use latched bits (written at LCD enable and dot 77)
                 stat_mode = stat & 0x03;
             } else {
-                // Normal lines: derive from internal mode with quirks
-                stat_mode = mode;
+                // Normal operation: use mode_visible (staged PPU model)
+                stat_mode = mode_visible;
                 
-                if (mode == OAM_SCAN) {
+                // Dot-level quirks still apply to the visible mode
+                if (mode_visible == OAM_SCAN) {
                     if (dot_counter == 0 && ly != 0) {
                         stat_mode = HBLANK;  // Return mode 0 at dot 0
                     } else if (dot_counter >= 83) {
@@ -661,16 +766,11 @@ uint8_t PPU::ReadRegister(uint16_t addr) const {
                 }
             }
             
-            // Debug: trace ALL STAT reads when ly=0 lyc=1 (no limit)
-            uint8_t result = (stat & 0xFC) | stat_mode | 0x80;
-            // Trace ANY read that returns $84 (the incorrect value in test)
-            if (result == 0x84 && lyc == 1) {
-                fprintf(stderr, "STAT=$84! ly=%d lyc=%d ly_cmp=%d dot=%d stat=$%02X stat_mode=%d\n",
-                        ly, lyc, ly_for_comparison, dot_counter, stat, stat_mode);
-            }
-            
-            // Return STAT with mode bits (preserve bits 2-6, add bit 7)
-            return result;
+            // Return STAT with mode bits
+            // Bit 2 (LYC coincidence) comes from cached stat register, updated by CheckStatInterrupt()
+            // Bits 3-6: preserved from stat (interrupt enables)
+            // Bit 7: always 1
+            return (stat & 0xFC) | stat_mode | 0x80;
         }
         case 0xFF42: return scy;
         case 0xFF43: return scx;
@@ -697,11 +797,16 @@ void PPU::WriteRegister(uint16_t addr, uint8_t value) {
                 // LCD turning OFF per SameBoy GB_lcd_off:
                 // - LY = 0, mode = 0 (HBlank)
                 // - LY=LYC bit (bit 2 of stat) is preserved
-                // - Mode bits stored separately in 'mode' variable
                 ly = 0;
                 dot_counter = 0;
                 mode = HBLANK;  // Per SameBoy line 575: STAT mode = 0
-                // Note: Don't touch stat here - preserve bit 2 (LY=LYC)
+                mode_visible = HBLANK;  // Visible mode also HBLANK
+                mode_visibility_delay = 0;
+                // OAM/VRAM accessible when LCD is off
+                oam_read_blocked = false;
+                oam_write_blocked = false;
+                vram_read_blocked = false;
+                vram_write_blocked = false;
             }
             lcdc = value;
             if ((value & 0x80) && !was_enabled) {
@@ -717,8 +822,15 @@ void PPU::WriteRegister(uint16_t addr, uint8_t value) {
                 ly_for_comparison = 0;  // Comparison value also starts at 0
                 dot_counter = 0;
                 mode = HBLANK;  // Start in Mode 0
+                mode_visible = HBLANK;  // Visible mode starts in Mode 0
+                mode_visibility_delay = 0;
                 stat = (stat & ~0x03) | HBLANK;  // LATCH mode bits to HBLANK
                 mode_for_interrupt = -1;  // No interrupt initially
+                // Per SameBoy display.c line 1674-1677: OAM/VRAM not blocked at LCD enable
+                oam_read_blocked = false;
+                oam_write_blocked = false;
+                vram_read_blocked = false;
+                vram_write_blocked = false;
                 CheckStatInterrupt();
             }
             break;
@@ -747,31 +859,58 @@ void PPU::WriteRegister(uint16_t addr, uint8_t value) {
 
 // === VRAM/OAM Access ===
 uint8_t PPU::ReadVRAM(uint16_t addr) const {
-    // Per Pan Docs: VRAM accessible except during Mode 3, or when LCD is OFF
-    if (!IsLCDEnabled() || mode != PIXEL_TRANSFER) {
-        return vram[addr - 0x8000];
+    // Per SameBoy: VRAM accessible when LCD is OFF or when not blocked
+    // vram_read_blocked is set at specific T-cycle timings during Mode 3
+    if (!IsLCDEnabled()) {
+        return vram[addr - 0x8000];  // LCD off - always accessible
     }
-    return 0xFF;
+    
+    // Per SameBoy: check vram_read_blocked flag
+    if (vram_read_blocked) {
+        return 0xFF;
+    }
+    
+    return vram[addr - 0x8000];
 }
 
 void PPU::WriteVRAM(uint16_t addr, uint8_t value) {
-    // Per Pan Docs: VRAM accessible except during Mode 3, or when LCD is OFF
-    if (!IsLCDEnabled() || mode != PIXEL_TRANSFER) {
+    // Per SameBoy: VRAM writable when LCD is OFF or when not blocked
+    if (!IsLCDEnabled()) {
+        vram[addr - 0x8000] = value;  // LCD off - always accessible
+        return;
+    }
+    
+    // Per SameBoy: check vram_write_blocked flag
+    if (!vram_write_blocked) {
         vram[addr - 0x8000] = value;
     }
 }
 
 uint8_t PPU::ReadOAM(uint16_t addr) const {
-    // Per Pan Docs: OAM accessible during HBlank, VBlank, or when LCD is OFF
-    if (!IsLCDEnabled() || mode == HBLANK || mode == VBLANK) {
-        return oam[addr - 0xFE00];
+    // Per SameBoy: OAM accessible when LCD is OFF or when not blocked
+    // oam_read_blocked is set at specific T-cycle timings during Mode 2/3
+    if (!IsLCDEnabled()) {
+        return oam[addr - 0xFE00];  // LCD off - always accessible
     }
-    return 0xFF;
+    
+    // Per SameBoy memory.c line 560: check oam_read_blocked flag
+    if (oam_read_blocked) {
+        return 0xFF;
+    }
+    
+    return oam[addr - 0xFE00];
 }
 
 void PPU::WriteOAM(uint16_t addr, uint8_t value) {
-    // Per Pan Docs: OAM accessible during HBlank, VBlank, or when LCD is OFF
-    if (!IsLCDEnabled() || mode == HBLANK || mode == VBLANK) {
+    // Per SameBoy: OAM writable when LCD is OFF or when not blocked
+    // oam_write_blocked is set slightly before oam_read_blocked
+    if (!IsLCDEnabled()) {
+        oam[addr - 0xFE00] = value;  // LCD off - always accessible
+        return;
+    }
+    
+    // Per SameBoy: check oam_write_blocked flag
+    if (!oam_write_blocked) {
         oam[addr - 0xFE00] = value;
     }
 }

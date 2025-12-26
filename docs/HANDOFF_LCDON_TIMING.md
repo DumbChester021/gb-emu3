@@ -133,7 +133,7 @@ cd ..
 - Uses `ly_for_comparison` for internal timing
 - Has sophisticated STAT update logic
 
-## ChatGPT Insights (December 2024)
+## ChatGPT Insights (December 2025)
 
 ChatGPT confirmed:
 1. A phased PPU model is more hardware-accurate

@@ -95,7 +95,11 @@ private:
     };
     
     // === Internal State ===
-    Mode mode;
+    Mode mode;                  // Internal mode (drives PPU logic)
+    Mode mode_visible;          // Visible mode (STAT reads) - lags behind internal mode
+    Mode next_mode_visible;     // Pending visible mode to apply after delay
+    uint8_t mode_visibility_delay; // Countdown: 0=no update, 1=update next cycle, 2+=decrement
+    
     uint16_t dot_counter;       // Dots within current scanline (0-455)
     uint8_t ly;                 // Current scanline (0-153)
     int16_t ly_for_comparison;  // Per SameBoy: value used for LYC comparison, may differ from ly
@@ -105,8 +109,15 @@ private:
     bool lcd_just_enabled;      // Per SameBoy: Line 0 after LCD enable has special timing
     bool first_line_after_lcd;  // Line 0 after LCD enable is shortened (4 dots less)
     bool ly_update_pending;     // Per SameBoy: visible LY updates at line START, not end
-    bool ly_comparator_pending; // LYC comparator input updates one phase AFTER visible LY
+    uint8_t ly_comparator_delay; // Countdown: 0=no update, N=decrement, 0→update ly_for_comparison
     uint8_t next_ly;            // Pending LY value to apply at next line start
+    
+    // Per SameBoy: OAM/VRAM access blocking flags (independent of mode)
+    // These are set at specific T-cycle timings during Mode 2/3 transitions
+    bool oam_read_blocked;      // OAM reads return $FF when true (Mode 2/3)
+    bool oam_write_blocked;     // OAM writes are ignored when true (Mode 2/3)
+    bool vram_read_blocked;     // VRAM reads return $FF when true (Mode 3 only)
+    bool vram_write_blocked;    // VRAM writes are ignored when true (Mode 3 only)
     
     // === Registers ===
     uint8_t lcdc;   // $FF40 - LCD Control
