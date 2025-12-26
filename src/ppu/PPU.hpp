@@ -98,10 +98,15 @@ private:
     Mode mode;
     uint16_t dot_counter;       // Dots within current scanline (0-455)
     uint8_t ly;                 // Current scanline (0-153)
+    int16_t ly_for_comparison;  // Per SameBoy: value used for LYC comparison, may differ from ly
     int16_t window_line;        // Window internal line counter (starts at -1)
     bool window_active;         // Window triggered on current scanline
     bool window_triggered;      // Window was triggered this frame
     bool lcd_just_enabled;      // Per SameBoy: Line 0 after LCD enable has special timing
+    bool first_line_after_lcd;  // Line 0 after LCD enable is shortened (4 dots less)
+    bool ly_update_pending;     // Per SameBoy: visible LY updates at line START, not end
+    bool ly_comparator_pending; // LYC comparator input updates one phase AFTER visible LY
+    uint8_t next_ly;            // Pending LY value to apply at next line start
     
     // === Registers ===
     uint8_t lcdc;   // $FF40 - LCD Control

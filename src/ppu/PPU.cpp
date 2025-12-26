@@ -1,4 +1,5 @@
 #include "PPU.hpp"
+#include <cstdio>
 
 PPU::PPU() {
     Reset();
@@ -8,10 +9,15 @@ void PPU::Reset(bool bootRomEnabled) {
     mode = bootRomEnabled ? HBLANK : OAM_SCAN;  // LCD off starts in mode 0
     dot_counter = 0;
     ly = 0;
+    ly_for_comparison = 0;  // Per SameBoy: comparison value starts at 0
     window_line = -1;
     window_active = false;
     window_triggered = false;
     lcd_just_enabled = false;
+    first_line_after_lcd = false;
+    ly_update_pending = false;
+    ly_comparator_pending = false;
+    next_ly = 0;
     
     // Registers - per SameBoy: boot ROM starts with LCD off (LCDC=0)
     // Without boot ROM, start with post-boot state (LCDC=$91)
@@ -66,6 +72,22 @@ void PPU::Step(uint8_t cycles) {
     }
     
     for (int i = 0; i < cycles; i++) {
+        // PHASE 1: Commit scheduled visibility changes
+        // Visible LY updates FIRST, comparator input updates LATER
+        if (dot_counter == 0 && ly_update_pending) {
+            ly = next_ly;  // Visible LY changes NOW
+            ly_update_pending = false;
+            ly_comparator_pending = true;  // Schedule comparator update for NEXT phase
+        }
+        
+        // PHASE 2: Update comparator input (one phase after visible LY)
+        // This is the key fix: STAT LYC comparison lags behind visible LY
+        if (ly_comparator_pending) {
+            ly_for_comparison = ly;  // NOW update comparator input
+            ly_comparator_pending = false;
+            CheckStatInterrupt();  // Evaluate STAT LYC with updated comparator input
+        }
+        
         // Per Pan Docs: process at current dot, THEN increment
         switch (mode) {
             case OAM_SCAN:
@@ -246,6 +268,11 @@ void PPU::StepPixelTransfer() {
                 position_in_line++;
                 
                 if (lcd_x >= 160) {
+                    // Debug: trace Mode 3 end
+                    static int m3end_trace = 0;
+                    if (ly == 0 && m3end_trace++ < 5) {
+                        fprintf(stderr, "MODE3_END ly=%d dot=%d\n", ly, dot_counter);
+                    }
                     mode = HBLANK;
                     mode_for_interrupt = 0;
                     CheckStatInterrupt();
@@ -257,27 +284,54 @@ void PPU::StepPixelTransfer() {
 
 // === Mode 0: HBlank ===
 void PPU::StepHBlank() {
-    // Per SameBoy display.c lines 1664-1714:
-    // Line 0 after LCD enable starts in Mode 0, then goes directly to Mode 3
-    // Timing: ~76 dots in Mode 0, then Mode 3 at ~dot 78
+    // Per SameBoy display.c: STAT mode=3 visible at cycle 78 (dot 77), but actual Mode 3
+    // processing (mode_3_start) begins at cycle 83 (dot 82).
+    //
+    // CRITICAL: STAT mode bits must be LATCHED at dot 77, not recomputed on read!
+    // The test expects different reads at 1 M-cycle apart to see different modes.
+    // This only works if STAT bits are latched at the exact transition dot.
+    
     if (lcd_just_enabled && ly == 0) {
-        // After ~78 dots (MODE2_LENGTH - 4 + 2), transition to Mode 3
+        // STAT mode bits = 3 at dot 77 (latched, visible to CPU reads)
+        // Per SameBoy lines 1692-1693: update STAT register here
         if (dot_counter == 77) {
-            mode = PIXEL_TRANSFER;
+            stat = (stat & ~0x03) | PIXEL_TRANSFER;  // LATCH mode bits in STAT
             mode_for_interrupt = 3;
-            InitFetcher();
-            lcd_just_enabled = false;  // Only affects Line 0
         }
-        return;  // Don't do normal HBlank processing during special Line 0
+        
+        // Internal mode changes at dot 82 when rendering actually starts
+        // Per SameBoy lines 1704-1714: mode_3_start after +2+3 more cycles
+        if (dot_counter == 82) {
+            mode = PIXEL_TRANSFER;
+            InitFetcher();
+            lcd_just_enabled = false;
+        }
     }
     
-    if (dot_counter == 455) {
+    // Determine line end position
+    // Per SameBoy line 1690: "Mode 0 is shorter on the first line 0"
+    // Line 0 after LCD enable ends 4 dots earlier (test expects LY=1 at cycle 111 = dot 452)
+    uint16_t line_end = first_line_after_lcd ? 451 : 455;
+    
+    if (dot_counter == line_end) {
+        // Clear shortened line flag (only first line is affected)
+        if (first_line_after_lcd) {
+            first_line_after_lcd = false;
+        }
+        
         // Note: window_line is incremented when window TRIGGERS (in RenderPixel), not here
         
-        ly++;
-        stat = (stat & ~0x04) | ((ly == lyc) ? 0x04 : 0);
+        // Schedule LY update for next line start (don't update visible ly yet!)
+        next_ly = ly + 1;
+        ly_update_pending = true;
         
-        if (ly == 144) {
+        // Update ly_for_comparison for INTERRUPT timing (fires at line boundary)
+        // But STAT bit 2 will NOT change because CheckStatInterrupt uses effective_ly
+        ly_for_comparison = ly + 1;
+        CheckStatInterrupt();  // Evaluate interrupt with internal timing
+        
+        // Mode transitions still happen at line end
+        if (next_ly == 144) {
             // Per SameBoy display.c lines 2160-2162, 2177-2178:
             // At VBlank entry, Mode 2 interrupt (bit 5) also fires if enabled
             // This is a DMG quirk where line 144 triggers the "OAM STAT interrupt"
@@ -307,11 +361,19 @@ void PPU::StepHBlank() {
 // === Mode 1: VBlank ===
 void PPU::StepVBlank() {
     if (dot_counter == 455) {
-        ly++;
-        stat = (stat & ~0x04) | ((ly == lyc) ? 0x04 : 0);
+        // Schedule LY update for next line start (don't update visible ly yet!)
+        next_ly = ly + 1;
+        if (next_ly > 153) next_ly = 0;  // Wrap at frame boundary
+        ly_update_pending = true;
         
-        if (ly > 153) {
-            ly = 0;
+        // Update ly_for_comparison for INTERRUPT timing (fires at line boundary)
+        // But STAT bit 2 will NOT change because CheckStatInterrupt uses effective_ly
+        ly_for_comparison = ly + 1;
+        if (ly_for_comparison > 153) ly_for_comparison = 0;
+        CheckStatInterrupt();  // Evaluate interrupt with internal timing
+        
+        // Mode transitions
+        if (next_ly == 0) {
             mode = OAM_SCAN;
             mode_for_interrupt = 2;  // Per SameBoy: Mode 2 interrupt check
             window_line = -1;  // Per SameBoy: starts at -1, incremented when window triggers
@@ -321,7 +383,7 @@ void PPU::StepVBlank() {
         }
         
         dot_counter = (uint16_t)-1;
-        CheckStatInterrupt();
+        CheckStatInterrupt();  // Re-evaluate after mode change
     }
 }
 
@@ -531,15 +593,20 @@ bool PPU::RenderPixel() {
 }
 
 // === STAT Interrupt ===
+// This function evaluates the STAT interrupt line based on current state.
+// CRITICAL: STAT bit 2 uses ly_for_comparison, which LAGS behind visible ly!
 void PPU::CheckStatInterrupt() {
     // Per SameBoy GB_STAT_update line 525:
     // if (!(gb->io_registers[GB_IO_LCDC] & GB_LCDC_ENABLE)) return;
     // When LCD is off, the comparison clock is frozen
     if (!IsLCDEnabled()) return;
     
-    // Per SameBoy GB_STAT_update lines 532-542:
-    // Update LY=LYC bit in STAT register
-    bool lyc_match = (ly == lyc);
+    // PHASED MODEL: STAT bit 2 uses ly_for_comparison (lags behind visible ly)
+    // At line boundary:
+    //   - Phase 1: visible ly = 1
+    //   - Phase 2: ly_for_comparison = 1, STAT bit 2 updates
+    // CPU reads between phases see: LY=1, but STAT shows no coincidence (old comparison)
+    bool lyc_match = (ly_for_comparison == lyc);
     if (lyc_match) {
         stat |= 0x04;   // Set LY=LYC bit
     } else {
@@ -570,24 +637,48 @@ uint8_t PPU::ReadRegister(uint16_t addr) const {
     switch (addr) {
         case 0xFF40: return lcdc;
         case 0xFF41: {
-            // Per SameBoy display.c:
-            // - At dot 0 of line (non-zero), STAT mode bits still show 0 (HBLANK)
-            // - STAT mode = 3 at dot 83 (based on pan docs: 80-dot OAM + 3-dot transition)
-            // Note: mode_for_interrupt changes earlier for interrupt purposes
-            uint8_t stat_mode = mode;
+            // STAT is a VIEW of PPU state with dot-level quirks.
+            // It is NOT the authoritative source of mode, and must NOT drive interrupts.
+            // 
+            // - LCD line 0 after enable: Uses explicitly latched stat bits
+            // - Normal lines: Derived from internal mode with dot-based quirks
             
-            if (mode == OAM_SCAN) {
-                if (dot_counter == 0 && ly != 0) {
-                    stat_mode = HBLANK;  // Return mode 0 at dot 0
-                } else if (dot_counter >= 83) {
-                    stat_mode = PIXEL_TRANSFER;  // STAT shows mode 3 at dot 83+
+            uint8_t stat_mode;
+            
+            if (lcd_just_enabled && ly == 0) {
+                // LCD line 0 special case: use latched bits (written at LCD enable and dot 77)
+                stat_mode = stat & 0x03;
+            } else {
+                // Normal lines: derive from internal mode with quirks
+                stat_mode = mode;
+                
+                if (mode == OAM_SCAN) {
+                    if (dot_counter == 0 && ly != 0) {
+                        stat_mode = HBLANK;  // Return mode 0 at dot 0
+                    } else if (dot_counter >= 83) {
+                        stat_mode = PIXEL_TRANSFER;  // STAT shows mode 3 at dot 83+
+                    }
                 }
             }
-            return stat | stat_mode | 0x80;
+            
+            // Debug: trace ALL STAT reads when ly=0 lyc=1 (no limit)
+            uint8_t result = (stat & 0xFC) | stat_mode | 0x80;
+            // Trace ANY read that returns $84 (the incorrect value in test)
+            if (result == 0x84 && lyc == 1) {
+                fprintf(stderr, "STAT=$84! ly=%d lyc=%d ly_cmp=%d dot=%d stat=$%02X stat_mode=%d\n",
+                        ly, lyc, ly_for_comparison, dot_counter, stat, stat_mode);
+            }
+            
+            // Return STAT with mode bits (preserve bits 2-6, add bit 7)
+            return result;
         }
         case 0xFF42: return scy;
         case 0xFF43: return scx;
-        case 0xFF44: return ly;
+        case 0xFF44:
+            // HARDWARE QUIRK: Visible LY changes BEFORE STAT LYC bit updates!
+            // At line boundary, LY returns next value, but STAT bit 2 still uses old LY.
+            // Return next_ly if update is pending (line boundary crossed)
+            return ly_update_pending ? next_ly : ly;
         case 0xFF45: return lyc;
         case 0xFF47: return bgp;
         case 0xFF48: return obp0;
@@ -619,10 +710,14 @@ void PPU::WriteRegister(uint16_t addr, uint8_t value) {
                 // - Starts in Mode 0 (not Mode 2)
                 // - Skips OAM scan, goes directly to Mode 3
                 // - Has 2-cycle timing offset
+                // - Line is ~4 dots shorter (per SameBoy line 1690: "Mode 0 is shorter")
                 lcd_just_enabled = true;
+                first_line_after_lcd = true;  // Line 0 ends 4 dots early
                 ly = 0;
+                ly_for_comparison = 0;  // Comparison value also starts at 0
                 dot_counter = 0;
                 mode = HBLANK;  // Start in Mode 0
+                stat = (stat & ~0x03) | HBLANK;  // LATCH mode bits to HBLANK
                 mode_for_interrupt = -1;  // No interrupt initially
                 CheckStatInterrupt();
             }
@@ -638,6 +733,8 @@ void PPU::WriteRegister(uint16_t addr, uint8_t value) {
         case 0xFF43: scx = value; break;
         case 0xFF45:
             lyc = value;
+            // Note: LYC coincidence flag is updated during PPU step, not on LYC write
+            // See SameBoy's ly_for_comparison which handles timing edge cases
             CheckStatInterrupt();  // Per SameBoy: re-evaluate IRQ line after LYC change
             break;
         case 0xFF47: bgp = value; break;

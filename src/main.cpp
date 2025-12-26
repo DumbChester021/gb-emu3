@@ -4,6 +4,7 @@
 #include <chrono>
 #include <thread>
 #include <iomanip>
+#include <filesystem>
 
 #include "Emulator.hpp"
 #include "frontend/Window.hpp"
@@ -62,6 +63,12 @@ bool ParseArgs(int argc, char* argv[], Args& args) {
 
 // Dump framebuffer to PGM file (grayscale)
 void DumpScreen(const Emulator& emu, const std::string& path) {
+    // Create directory if needed
+    std::filesystem::path p(path);
+    if (p.has_parent_path()) {
+        std::filesystem::create_directories(p.parent_path());
+    }
+    
     const uint8_t* fb = emu.GetFramebuffer();
     std::ofstream file(path, std::ios::binary);
     if (!file) {
@@ -79,7 +86,13 @@ void DumpScreen(const Emulator& emu, const std::string& path) {
     std::cout << "Screen dumped to: " << path << "\n";
 }
 
-int RunHeadless(Emulator& emu, uint64_t max_cycles, const std::string& dump_path = "") {
+// Helper to extract test name from ROM path
+std::string GetTestName(const std::string& rom_path) {
+    std::filesystem::path p(rom_path);
+    return p.stem().string();
+}
+
+int RunHeadless(Emulator& emu, uint64_t max_cycles, const std::string& rom_path, const std::string& dump_path = "") {
     std::string serial_output;
     uint64_t cycles = 0;
     uint64_t target = max_cycles > 0 ? max_cycles : 30000000;
@@ -127,6 +140,7 @@ int RunHeadless(Emulator& emu, uint64_t max_cycles, const std::string& dump_path
         return 0;
     } else if (mooneye_result == 1) {
         std::cout << "\n\n=== TEST FAILED (Mooneye) ===\n";
+        DumpScreen(emu, "test_dumps/" + GetTestName(rom_path) + ".pgm");  // Dump to test_dumps with test name
         if (!dump_path.empty()) DumpScreen(emu, dump_path);
         return 1;
     }
@@ -326,7 +340,7 @@ int main(int argc, char* argv[]) {
     emu.Reset();
     
     if (args.headless) {
-        return RunHeadless(emu, args.max_cycles, args.dump_screen_path);
+        return RunHeadless(emu, args.max_cycles, args.rom_path, args.dump_screen_path);
     } else {
         return RunGUI(emu, window, rom_info, save_path);
     }
