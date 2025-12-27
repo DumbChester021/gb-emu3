@@ -595,9 +595,272 @@ All implementations verified against SameBoy 1.0.2 `display.c`:
 - ✅ STAT LYC timing tests
 - ✅ **lcdon_timing-GS.gb** (STAT, OAM, VRAM access)
 
-**Remaining Failures** (unrelated to this work):
-- hblank_ly_scx_timing-GS.gb (SCX timing during HBlank)
-- intr_2_mode0_timing_sprites.gb (sprite timing)
-- lcdon_write_timing-GS.gb (write timing during LCD enable)
+**Remaining Failures** (3 tests):
+- hblank_ly_scx_timing-GS.gb (SCX affects Mode 3 duration - see investigation below)
+- intr_2_mode0_timing_sprites.gb (sprite timing during mode transitions)
+- lcdon_write_timing-GS.gb (write timing during LCD enable sequence)
 
+---
+
+## SCX Timing Investigation (December 26, 2024) - ATTEMPTED & REVERTED
+
+### Problem
+Test `hblank_ly_scx_timing-GS.gb` checks how SCX (scroll X) affects HBlank timing.
+
+**Test expectations**:
+- SCX mod 8 = 0: LY increments **51 cycles** after STAT Mode 0 interrupt
+- SCX mod 8 = 1-4: **50 cycles** after
+- SCX mod 8 = 5-7: **49 cycles** after
+
+### SameBoy Investigation
+Found in `display.c line 1493: mode3_batching_length()`:
+```c
+// No objects or window, timing is trivial
+return 167 + (gb->io_registers[GB_IO_SCX] & 7);
+```
+
+**Mode 3 duration = 167 + (SCX & 7) cycles**
+
+This explains the timing variation - SCX adds 0-7 cycles to Mode 3, affecting when HBlank starts and LY increments.
+
+### Implementation Attempt
+Added `mode3_cycles` counter to end Mode 3 at `167 + (SCX & 7)` cycles.
+
+**Result**: **REGRESSION from 86/89 to 82/89 tests**
+
+Broke:
+- lcdon_timing-GS (was passing!)
+- intr_2_0_timing
+- intr_2_mode0_timing
+- intr_2_oam_ok_timing
+
+### Root Cause
+**Critical discovery**: SameBoy's formula is for **batched Mode 3 fast-path** used when:
+- No sprites on scanline
+- Window not active
+- Simple rendering possible
+
+Our PPU runs **pixel-by-pixel FIFO rendering** every cycle. Forcing Mode 3 to end at a specific cycle count conflicts with the FIFO's natural pixel output timing.
+
+### Reversion
+**Reverted all changes** to restore 86/89 baseline.
+
+Removed:
+- `mode3_cycles` counter from PPU.hpp
+- Cycle-based Mode 3 ending check
+- All mode3_cycles initialization
+- Restored original pixel-based Mode 3 ending (`lcd_x >= 160`)
+
+### Key Learning
+**Don't blindly copy formulas** - understand the context:
+- SameBoy has **two rendering paths**: batched (fast) and pixel-by-pixel (slow)
+- The `167 + (SCX & 7)` formula only applies to batched path
+- Our FIFO implementation is pixel-by-pixel, needs different approach
+
+**Future approach for SCX timing**:
+1. Conditionally batch simple scanlines (match SameBoy's batching conditions)
+2. OR adjust FIFO fetcher delays based on SCX
+3. OR research SameBoy's non-batched SCX handling
+
+**Status**: Test deferred. Maintaining 86/89 baseline is priority.
+
+---
+
+## lcdon_write_timing-GS Investigation (December 27, 2024) - DEFERRED
+
+### Problem
+Test `lcdon_write_timing-GS.gb` checks OAM/VRAM **write** access timing after LCD enable.
+Different from `lcdon_timing-GS` (read test, passes).
+
+### Test Structure
+- 19 NOP counts spanning multiple scanlines
+- Tests both OAM and VRAM write access
+
+### SameBoy Timing (display.c 1674-1705)
+```
+lcd_just_enabled line 0:
+  Cycle 0-75:  All access unblocked
+  Cycle 76:    oam_write_blocked = true (LINE 1683)
+  Cycle 78:    oam_read_blocked = true, VRAM blocked
+```
+
+**Key finding**: Write blocking happens **2 cycles BEFORE** read blocking!
+
+### Debug Trace Results
+Line 0 timing appears correct, but issues continue onto line 1.
+The test spans multiple scanlines - requires fixes for BOTH lcd_just_enabled AND normal lines.
+
+### Status
+**DEFERRED** - All 3 remaining failures share common issue: **precise Mode 3 duration**.
+Our FIFO implementation determines Mode 3 length by pixel output, not cycle counting.
+
+---
+
+## Attempted Fix: Line 0 Length Change (December 27, 2024) - REVERTED
+
+### What Was Tried
+Changed `first_line_after_lcd` line length from 451 → 456 dots to match SameBoy's LINE_LENGTH.
+
+### Result
+**REGRESSION** - The `lcdon_timing-GS` (read test) which was passing started failing.
+
+### Lesson Learned
+The 451-dot line 0 length is **hardware-accurate for read timing**. Changing it caused the 
+read test to fail. Line length is NOT the issue for write timing.
+
+### Key Insights from ROM Analysis
+
+**Test data verified from compiled ROM:**
+```
+nop_counts: 0, 17, 18, 60, 61, 110, 111, 112, 130, 131, 132, ...
+expect_oam (index 8, nop=130): $00 (blocked)
+expect_oam (index 9, nop=131): $81 (accessible)
+```
+
+**The test probes Mode 2/HBlank boundaries:**
+- nop=130 at ~dot 528: blocked (Mode 2 of line 1 if line 0 is 451 dots, OR Mode 3 end of line 0)
+- nop=131 at ~dot 532: accessible (should be HBlank)
+
+### Root Cause Hypothesis
+The issue is NOT line 0 length. It's that writes at nop=131 (dot ~532) should be in HBlank
+of the current line's rendering cycle, but our Mode 3 runs too long OR our HBlank timing 
+is misaligned.
+
+**SameBoy OAM write blocking timeline:**
+- Dot 3: `oam_write_blocked = true` (Mode 2 starts, our fix applied)
+- Dot ~252-256: `oam_write_blocked = false` (HBlank starts, Mode 3 ends)
+
+For line 0 after LCD enable (451 dots), HBlank starts around dot 252. Writes at dot 528
+would be at dot 77 of line 1, which is Mode 2 → blocked. But the test expects accessible!
+
+**Possible issue:** The test may expect writes to be checked against a DIFFERENT timing model
+than reads. OR there's an off-by-one in our pending cycles accounting.
+
+### Status
+Reverted line length change. Further investigation needed on OAM write timing.
+
+---
+
+## OAM Write Unblocking During Mode 2→Mode 3 Transition (December 27, 2024) - IMPLEMENTED
+
+### Critical Discovery
+SameBoy display.c line 1821 at OAM index 37 (~dot 76):
+```cpp
+gb->oam_write_blocked = GB_is_cgb(gb);  // FALSE for DMG!
+```
+
+This creates a brief window (dots 76-84) where OAM **writes** are accessible during the Mode 2→Mode 3 transition, even though OAM **reads** remain blocked.
+
+### Implementation
+Added in StepOAMScan:
+1. **Dot 76**: `oam_write_blocked = false` (per SameBoy line 1821)
+2. **Dot 84**: `oam_write_blocked = true` (per SameBoy line 1833 at Mode 3 start)
+
+### Test Results
+- `lcdon_timing-GS` (read test): Still PASSES ✓
+- `lcdon_write_timing-GS`: Still failing, but nop=131 at dot 80 now accessible
+
+### Remaining Issues
+The write test has 19 test points probing multiple timing boundaries:
+- Line 0 lcd_just_enabled LCD transitions
+- Mode 2→Mode 3 transitions (dots 76-84)
+- Mode 3→Mode 0 transitions (HBlank entry)
+- Line boundary transitions
+
+Each boundary has slightly different timing for reads vs writes.
+
+### Current Status
+86/89 tests passing (no regression). The OAM write blocking during Mode 2→3 transition
+is now hardware-accurate per SameBoy, but the complete write timing test requires fixing
+ALL timing boundaries, not just this one.
+
+---
+
+## Critical Discovery: Loop Exit Timing vs Check Timing (December 27, 2024)
+
+### The Fundamental Issue
+When PPU::Step(4) processes 4 dots, it iterates through dots N to N+3, then exits with
+`dot_counter = N+4`. Checks inside StepOAMScan fire DURING iterations (at specific dot values),
+but CPU writes see `dot_counter` AFTER the loop exits.
+
+**Example:** 
+- PPU starts at dot 72, Step(4) processes dots 72, 73, 74, 75
+- After loop, dot_counter = 76
+- CPU write sees dot_counter = 76, but check at `dot_counter == 76` never fired!
+
+This creates a timing gap:
+- **READ tests**: CPU reads happen mid-step, see the check results
+- **WRITE tests**: CPU writes happen AFTER step completes, see the exit value
+
+### Why Fixes Conflict
+Changing `if (dot_counter == 76)` to `if (dot_counter == 75)` would make the check
+fire before the loop exits at 76, but this breaks VRAM read timing which expects
+the check at 76.
+
+### Solution Required
+The `lcdon_write_timing-GS` test may require:
+1. Separating OAM write blocking from VRAM read blocking into different checks
+2. OR restructuring how the check loop interacts with memory access timing
+3. OR understanding that SameBoy may have different internal mechanics for syncing
+
+### Status
+This is a fundamental architectural issue. Fixes that work for writes break reads.
+Further investigation needed on how SameBoy synchronizes memory access timing
+with the PPU state machine.
+
+---
+
+## Mode 2→Mode 3 OAM Write Window Fix (December 27, 2024) - IMPLEMENTED
+
+### Problem
+nop=130 (dot 76 line 1) should be blocked, nop=131 (dot 80 line 1) should be accessible.
+
+### Root Cause
+Due to loop exit timing, checks at dot N only fire if that dot is PROCESSED during iteration.
+Writes that happen when `dot_counter == N` mean the loop exited AT N without processing it.
+
+### Solution
+Separated OAM write blocking from VRAM read blocking:
+- **Dot 76**: Set `oam_write_blocked = false` - fires for writes at dot 77+
+- **Dot 80**: Set `oam_write_blocked = true` - blocks for writes at dot 81+
+- **VRAM read blocking stays at dot 76** - this affects reads that see dot 77+ after processing
+
+### Result
+- nop=130 at dot 76: blocked ✓ (loop exits at 76 without processing unblock)
+- nop=131 at dot 80: accessible ✓ (previous Step processed 76, unblocking it)
+- nop=132 at dot 84: blocked ✓ (Step processed 80, re-blocking it)
+- Read test (`lcdon_timing-GS`): Still passes ✓
+
+---
+
+## VRAM Write Blocking at Mode 3 Start (December 27, 2024) - IMPLEMENTED
+
+### Problem
+After fixing OAM writes, test failed at VRAM Write nop=132 ($84) - expected blocked, got accessible.
+
+### Root Cause
+Same loop-exit timing issue as OAM writes. Check at dot 84 doesn't fire for writes at dot 84.
+
+### Solution
+Added separate VRAM write blocking at **dot 83** (fires for writes at 84+):
+```cpp
+if (dot_counter == 83) {
+    vram_write_blocked = true;
+}
+```
+
+### Result
+- **`lcdon_write_timing-GS`: PASSES** ✓
+- **`lcdon_timing-GS`: PASSES** ✓
+- **Test suite: 87/89** (up from 86/89)
+
+## Summary of Write Timing Fixes
+
+The key insight is that checks at dot N only fire if that dot is PROCESSED during the Step loop.
+For writes that happen when `dot_counter == N`, the loop exited AT N without processing.
+
+| Blocking Flag | Unblock At | Re-block At | Accessible Window |
+|---------------|------------|-------------|-------------------|
+| `oam_write_blocked` | dot 76 | dot 80 | writes at 77-80 |
+| `vram_write_blocked` | (N/A) | dot 83 | blocked from 84+ |
 

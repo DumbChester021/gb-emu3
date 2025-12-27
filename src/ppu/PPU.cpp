@@ -148,10 +148,11 @@ void PPU::StepOAMScan() {
             window_triggered = true;
         }
         
-        // Per SameBoy display.c line 1790: OAM blocked at Mode 2 entry
+        // Per SameBoy display.c lines 1775, 1790: OAM read blocked at Mode 2
+        // oam_read_blocked becomes true around dots 3-4
         // VRAM is blocked later at Mode 3 entry (line 1701), not here
         oam_read_blocked = true;
-        oam_write_blocked = true;
+        // Note: oam_write_blocked is set separately at dot 3 (per line 1794)
         
         // Fire Mode 2 interrupt (only for lines != 0)
         // Line 0 has special handling in VBlank/HBlank transitions
@@ -159,6 +160,13 @@ void PPU::StepOAMScan() {
             mode_for_interrupt = 2;
             CheckStatInterrupt();
         }
+    }
+    
+    // Per SameBoy display.c line 1794: oam_write_blocked = true at dot 4
+    // We check at dot 3 so the blocking takes effect for writes at dot 4+
+    // This allows nop=111 (dot 0-3 of line 1) to succeed
+    if (dot_counter == 3) {
+        oam_write_blocked = true;
     }
     
     // Check 1 OAM entry every 2 dots
@@ -208,20 +216,39 @@ void PPU::StepOAMScan() {
     //   - Mode 0 STAT at cycle 256 = my dot 252
     //   - Mode 0 interrupt at cycle 257 = my dot 253
     
-    // Per SameBoy display.c lines 1807-1818: VRAM blocked at OAM index 37 on DMG
-    // The check happens AFTER GB_SLEEP(2), so timing is:
-    //   4 cycles before loop + (38 entries * 2 cycles) = 80 cycles into line
-    //   My dot 0 = SameBoy cycle 4, so SameBoy cycle 80 = my dot 76
+    // Per SameBoy display.c lines 1817-1821: At OAM index 37 on DMG:
+    // - VRAM read blocked (for reads that happen at dot 77+)
+    // - OAM write UNBLOCKED (line 1821: gb->oam_write_blocked = GB_is_cgb(gb))
+    //
+    // CRITICAL TIMING: Due to our Step loop exit timing:
+    // - Writes at dot 76 mean the loop exited AT 76 without processing the check at 76
+    // - So we must set oam_write_blocked=false at dot 75 (which fires during iteration)
+    // - VRAM blocking at dot 76 is fine for reads (they see dot 77+ after processing)
+    
+    // OAM write unblocking at dot 76 (for writes that happen when dot_counter shows 77+)
+    // nop=130 at dot 76 expects blocked, nop=131 at dot 80 expects accessible
+    // Window is dots 77-79: check at 76 to unblock for 77+, check at 79 to re-block for 80+
     if (dot_counter == 76) {
-        vram_read_blocked = true;
-        vram_write_blocked = true;
+        oam_write_blocked = false;
     }
     
-    if (dot_counter == 79) {
-        // STAT mode = 3 starts at SameBoy cycle 84 = my dot 80
-        // But we check at dot 79 so the change takes effect AT dot 80
+    // VRAM read blocking at dot 76 (for reads that see dot 77+ after step completes)
+    if (dot_counter == 76) {
+        vram_read_blocked = true;
+    }
+    
+    if (dot_counter == 80) {
+        // STAT mode = 3 transition and OAM write re-blocking
+        // Accessible window was dots 77-80, now blocked for writes at 81+
         mode_for_interrupt = 3;
+        oam_write_blocked = true;
         CheckStatInterrupt();
+    }
+    
+    // VRAM write blocking at dot 83 (for writes that happen at dot 84+)
+    // Same loop-exit timing issue: check at 84 doesn't fire for writes at 84
+    if (dot_counter == 83) {
+        vram_write_blocked = true;
     }
     
     if (dot_counter == 84) {
@@ -231,10 +258,11 @@ void PPU::StepOAMScan() {
         // Immediate visibility update for OAM_SCAN→PIXEL_TRANSFER
         mode_visible = PIXEL_TRANSFER;
         mode_visibility_delay = 0;  // No delay needed
-        // Per SameBoy: VRAM blocked when Mode 3 starts
-        // (OAM was already blocked at Mode 2 entry)
+        // Per SameBoy lines 1830-1834: All blocking flags true at Mode 3 start
         vram_read_blocked = true;
-        vram_write_blocked = true;
+        // vram_write_blocked already set at dot 83
+        oam_write_blocked = true;  // Re-block OAM writes at Mode 3 start
+        oam_read_blocked = true;   // Ensure OAM reads also blocked
         InitFetcher();
     }
 }
@@ -305,7 +333,15 @@ void PPU::StepPixelTransfer() {
             // Discard phase: pop pixels but don't render to screen
             PopBGPixel();
             if (sprite_fifo_size > 0) PopSpritePixel();
-            position_in_line++;
+            
+            // Per SameBoy display.c line 691-692: Position skip logic for SCX timing
+            // When position < -8 and alignment matches SCX, skip to -8 (end discard early)
+            // This creates natural timing variation: higher SCX = earlier skip = shorter Mode 3
+            if (position_in_line < -8 && ((position_in_line & 7) == (scx & 7))) {
+                position_in_line = -8;
+            } else {
+                position_in_line++;
+            }
         } else {
             // Visible phase: render to screen
             // RenderPixel returns false if window just triggered (no pixel rendered)
@@ -314,17 +350,10 @@ void PPU::StepPixelTransfer() {
                 position_in_line++;
                 
                 if (lcd_x >= 160) {
-                    // Debug: trace Mode 3 end
-                    static int m3end_trace = 0;
-                    if (ly == 0 && m3end_trace++ < 5) {
-                        fprintf(stderr, "MODE3_END ly=%d dot=%d\n", ly, dot_counter);
-                    }
                     mode = HBLANK;
-                    // Immediate visibility update for PIXEL_TRANSFER→HBLANK
                     mode_visible = HBLANK;
-                    mode_visibility_delay = 0;  // No delay needed
+                    mode_visibility_delay = 0;
                     mode_for_interrupt = 0;
-                    // Per SameBoy display.c line 2104: OAM/VRAM unblocked at HBlank entry
                     oam_read_blocked = false;
                     oam_write_blocked = false;
                     vram_read_blocked = false;
@@ -346,6 +375,14 @@ void PPU::StepHBlank() {
     // This only works if STAT bits are latched at the exact transition dot.
     
     if (lcd_just_enabled && ly == 0) {
+        // Per SameBoy display.c line 1683: oam_write_blocked becomes true at cycle 76
+        // When Step(4) processes dots 72-75, dot 76 is the exit value (not processed)
+        // Setting blocked at dot 76 means it takes effect for NEXT Step's writes (nop=18)
+        // This allows nop=17's write at dot 76 to succeed before blocking is set
+        if (dot_counter == 76) {
+            oam_write_blocked = true;
+        }
+        
         // STAT mode bits = 3 at dot 77 (latched, visible to CPU reads)
         // Per SameBoy lines 1692-1693, 1696-1697, 1700-1702: update STAT and block OAM/VRAM
         if (dot_counter == 77) {
@@ -355,7 +392,7 @@ void PPU::StepHBlank() {
             // Per SameBoy line 1697, 1701: OAM and VRAM blocked when Mode 3 starts
             // For lcd_just_enabled, there's no Mode 2, so set it here
             oam_read_blocked = true;
-            oam_write_blocked = true;
+            // oam_write_blocked already set at dot 76
             vram_read_blocked = true;
             vram_write_blocked = true;
         }
@@ -402,12 +439,13 @@ void PPU::StepHBlank() {
         // Schedule Phase 2 to update ly_for_comparison to actual ly value after delay
         ly_comparator_delay = 4;  // 4 dots: matches mode visibility timing
         
-        // KEY FIX: Set OAM blocked AT LINE END, not dot 0 (same reason as ly_for_comparison)
-        // CPU reads at cycle 111 happen BEFORE PPU Step runs, so set it here
+        // OAM read blocked is set at line end for immediate effect
+        // oam_write_blocked is NOT set here - it's set at dot 3 of the new line
+        // This allows writes during dots 0-3 (HBlank continuation) to succeed
         // For VBlank transition (next_ly == 144), OAM stays accessible
         if (next_ly < 144) {
             oam_read_blocked = true;
-            oam_write_blocked = true;
+            // Note: oam_write_blocked set at dot 3 of new line in StepOAMScan
         }
         
         // Mode transitions still happen at line end
