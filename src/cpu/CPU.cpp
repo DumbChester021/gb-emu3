@@ -40,13 +40,45 @@ void CPU::Reset(bool bootRomEnabled) {
 }
 
 uint8_t CPU::Step() {
-    // Handle interrupts first
+    // Handle interrupts first (uses IF from previous Step)
+    // For HALT wake, we jump here after detecting interrupt mid-M-cycle
+handle_interrupts:
     HandleInterrupts();
     
     if (halted) {
         // HALT mode: CPU stopped, but clocks keep running
-        InternalDelay();  // Accumulate 4 T-cycles
-        FlushPendingCycles();  // Flush to components
+        // Per SameBoy sm83_cpu.c L1625-1632: DMG HALT advances 2 cycles,
+        // checks IF, then advances 2 more. This allows interrupt detection
+        // in the middle of an M-cycle for proper M-cycle bucket alignment.
+        
+        // Flush any pending cycles first
+        FlushPendingCycles();
+        
+        // Step 1: Advance 2 T-cycles (per SameBoy L1626)
+        if (tick_callback) {
+            tick_callback(2);
+        }
+        
+        // Step 2: Check IF NOW (per SameBoy L1629)
+        // This happens BETWEEN the two 2-cycle advances
+        uint8_t if_reg = bus_read ? bus_read(0xFF0F) : 0;
+        uint8_t ie_reg = bus_read ? bus_read(0xFFFF) : 0;
+        if ((if_reg & ie_reg & 0x1F) != 0) {
+            halted = false;  // Wake from HALT at mid-M-cycle
+            // Still need to complete the M-cycle
+            if (tick_callback) {
+                tick_callback(2);  // Remaining 2 cycles
+            }
+            // Per SameBoy L1643-1700: Interrupt dispatch happens in SAME function call
+            // Don't return - jump to handle_interrupts to dispatch immediately
+            goto handle_interrupts;
+        }
+        
+        // Step 3: Advance 2 more T-cycles (per SameBoy L1632)
+        if (tick_callback) {
+            tick_callback(2);
+        }
+        
         return 4;
     }
     

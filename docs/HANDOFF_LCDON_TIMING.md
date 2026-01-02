@@ -9,13 +9,12 @@ This document was originally created for handoff during debugging of `lcdon_timi
 
 ---
 
-## Current Status (December 27, 2024)
+## Current Status (January 2025)
 
-- **86/89 Mooneye tests passing** ✅
-- **3 remaining failing tests**:
-  - `hblank_ly_scx_timing-GS.gb` (SCX affects Mode 3 duration - deferred, see learnings)
+- **87/89 Mooneye tests passing** ✅
+- **2 remaining failing tests**:
+  - `hblank_ly_scx_timing-GS.gb` (4-cycle timing offset issue - see PPU_TIMING_LEARNINGS.md)
   - `intr_2_mode0_timing_sprites.gb` (sprite timing)
-  - `lcdon_write_timing-GS.gb` (write timing during LCD enable)
 
 ## What Was Fixed
 
@@ -51,23 +50,20 @@ See `docs/PPU_TIMING_LEARNINGS.md` for complete technical details.
 ## Remaining Work (Future Sessions)
 
 ### hblank_ly_scx_timing-GS.gb
-**Problem**: SCX affects Mode 3 duration. Test expects different LY increment timing based on SCX value.
+**Problem**: 4-cycle timing offset between dot_counter and SameBoy's cycles_for_line.
 
-**Attempt Made & Reverted**: Tried using `167 + (SCX & 7)` formula from SameBoy but it caused 4-test regression because:
-- SameBoy's formula is for **batched Mode 3 fast-path**
-- Our PPU runs **pixel-by-pixel FIFO rendering**
-- The approaches are fundamentally incompatible without restructuring
+**Root Cause Analysis (January 2025)**:
+- OAM scan runs dots 0-79, but SameBoy uses cycles 4-83 (4-cycle offset)
+- Mode 3 starts at dot 85 vs SameBoy cycle 89
+- LY changes at dot 3 = cycle 3 (NO offset)
+- This inconsistency causes 206-dot delta instead of correct 202-dot
 
-**Future Approach Options**:
-1. Implement conditional scanline batching (match SameBoy's batching conditions)
-2. Adjust FIFO fetcher delays based on SCX
-3. Research SameBoy's non-batched SCX handling in FIFO path
+**Fix Attempted & Reverted**: Comprehensive 4-cycle shift gave correct 202-dot delta but caused 5 regressions (intr_2_* and lcdon_* tests).
+
+**See**: `docs/PPU_TIMING_LEARNINGS.md` for complete analysis.
 
 ### intr_2_mode0_timing_sprites.gb
 Sprite timing during mode transitions. Requires careful analysis of OAM scan and sprite fetch timing.
-
-### lcdon_write_timing-GS.gb
-Write timing during the LCD enable sequence. May require special handling of writes during the first line after LCD enable.
 
 ---
 

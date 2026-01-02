@@ -103,6 +103,12 @@ void Emulator::WireComponents() {
         [this](uint16_t addr, uint8_t val) { bus->Write(addr, val); },
         [this](uint8_t cycles) { TickComponents(cycles); }  // Tick per M-cycle
     );
+    
+    // === Connect PPU Interrupt Callback (Per SameBoy L558: immediate IF bit set) ===
+    // Real hardware sets IF bit at exact cycle, not batched after M-cycle
+    ppu->SetInterruptCallback([this](uint8_t bit) {
+        interrupts->RequestInterrupt(bit);
+    });
 }
 
 /**

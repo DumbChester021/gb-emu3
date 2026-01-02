@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <array>
+#include <functional>
 
 /**
  * PPU - Picture Processing Unit (Hardware-Accurate Pixel FIFO)
@@ -55,8 +56,14 @@ public:
     // === State Query ===
     uint8_t GetMode() const { return mode; }
     uint8_t GetLY() const { return ly; }
+    uint16_t GetDotCounter() const { return dot_counter; }  // For debug
     bool IsVRAMAccessible() const { return mode != PIXEL_TRANSFER; }
     bool IsOAMAccessible() const { return mode == HBLANK || mode == VBLANK; }
+    
+    // === Interrupt Callback (Per SameBoy L558: IF bit set immediately at exact cycle) ===
+    // Type: function(uint8_t interrupt_bit) - called to set IF bit immediately
+    using InterruptCallback = std::function<void(uint8_t)>;
+    void SetInterruptCallback(InterruptCallback callback) { irq_callback = callback; }
     
 private:
     // === PPU Modes ===
@@ -143,8 +150,15 @@ private:
     bool stat_irq;
     bool frame_complete;
     bool stat_line;          // Previous STAT interrupt line state
+    bool mode0_interrupt_pending;  // Per SameBoy: Mode 0 interrupt fires 1 cycle after lcd_x=160
     int8_t mode_for_interrupt;  // Per SameBoy: separate from actual mode for STAT timing
                                 // -1 = no mode-based interrupt, 0-2 = check this mode
+    
+    // === Debug timing ===
+    uint32_t debug_global_cycle;  // Absolute cycle counter for debug
+    uint32_t debug_mode0_cycle;   // Cycle when Mode 0 fired
+    bool debug_mode0_pending;     // Waiting to measure LY change after Mode 0
+    InterruptCallback irq_callback;  // Per SameBoy L558: for immediate IF bit set at exact cycle
     
     // === Pixel FIFO (16 entries each) ===
     std::array<FIFOPixel, 16> bg_fifo;

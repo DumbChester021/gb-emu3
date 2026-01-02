@@ -864,3 +864,340 @@ For writes that happen when `dot_counter == N`, the loop exited AT N without pro
 | `oam_write_blocked` | dot 76 | dot 80 | writes at 77-80 |
 | `vram_write_blocked` | (N/A) | dot 83 | blocked from 84+ |
 
+## hblank_ly_scx_timing-GS Investigation (ONGOING)
+
+### Test Expectations
+- **SCX=0**: LY changes 49-50 M-cycles after Mode 0 interrupt (delay 2-3)
+- **SCX=1-4**: LY changes 48-49 M-cycles after Mode 0 interrupt (delay 1-2)
+- **SCX=5-7**: LY changes 47-48 M-cycles after Mode 0 interrupt (delay 0-1)
+
+The test groups SCX values into buckets with 1 M-cycle (4 T-cycles) difference between buckets.
+
+### SameBoy Analysis (display.c L686-704)
+
+Position skip logic for SCX-based timing:
+1. `position_in_line` starts at -16
+2. At each iteration, if `(position & 7) == (SCX & 7)`, jump to -8
+3. L798 increments position after the check (so -8 becomes -7)
+4. Special case: at position -9 without match, reset to -16 and return early
+
+This gives Mode 3 variation of 0-7 cycles based on SCX, matching the `167 + (SCX & 7)` formula.
+
+### Implemented Changes
+1. **Position jump with increment**: When alignment matches, set position to -7 (not -8) to account for L798 increment
+2. **Check order**: L688 (-17), L691 (alignment), L697 (-9) per SameBoy
+3. **Mode 0 interrupt delay**: Added 1-cycle delay per SameBoy L2099-2108
+
+### Current Results
+- **SCX=0**: Mode 0 at dot 252, visible interrupt at dot 253
+- **SCX=1**: Mode 0 at dot 253, visible interrupt at dot 254
+- **SCX=7**: Mode 0 at dot 259, visible interrupt at dot 260
+
+Mode 3 duration varies by 7 cycles from SCX=0 to SCX=7 (correct range).
+
+### Outstanding Issue
+**M-cycle bucket mismatch**: Both SCX=0 (dot 252) and SCX=1 (dot 253) fall into M-cycle 63 (dots 252-255). The test expects SCX=0 alone in one bucket, SCX=1-4 in another.
+
+This suggests either:
+1. Our Mode 3 base timing is off by 2-3 cycles
+2. There's additional SCX-dependent timing we haven't identified
+3. The line-end timing might need adjustment
+
+### Attempted Fixes (REVERTED)
+**Mode 3 start shift (dot 84 → 83)**: Tried shifting Mode 3 start 1 dot earlier to shift all Mode 0 timings by 1 dot. This caused 4 test regressions (lcdon_timing-GS, lcdon_write_timing-GS, intr_2_mode0_timing, intr_2_oam_ok_timing). The regressions prove this was speculative and not hardware accurate. Reverted.
+
+### Analysis
+- Mode 3 duration is correct: 167 + (SCX & 7) cycles
+- Mode 0 entry: dot 252 (SCX=0), 253 (SCX=1), ... 259 (SCX=7)
+- Mode 0 interrupt (1 cycle later): dot 253 (SCX=0), 254 (SCX=1), ... 260 (SCX=7)
+- M-cycle 63: dots 252-255 → contains SCX=0,1,2,3 interrupts
+- M-cycle 64: dots 256-259 → contains SCX=4,5,6,7 interrupts
+- M-cycle 65: dot 260 → contains SCX=7 Mode 0 entry (interrupt fires here)
+
+Test expects: SCX=0 alone, SCX=1-4 together, SCX=5-7 together
+Our grouping: SCX=0-3 together (M-cycle 63 + 1 delay), SCX=4-7 together (M-cycle 64 + 1 delay)
+
+The fundamental issue is that the M-cycle boundaries don't align with the test's expected groupings. The Mode 0 interrupt delay may need to be adjusted or there's a more subtle timing factor.
+
+### Implemented: Immediate IF Bit Update (per SameBoy L558)
+
+Added `irq_callback` to PPU that calls `interrupts->RequestInterrupt()` directly at the exact cycle when interrupt fires, rather than batching IF updates after M-cycle. This is hardware-accurate per SameBoy display.c L558:
+```c
+if (gb->stat_interrupt_line && !previous_interrupt_line) {
+    gb->io_registers[GB_IO_IF] |= 2;  // Set immediately
+}
+```
+
+**Result**: No regressions (still 33/35), but SCX timing test still fails.
+
+### Root Cause Analysis
+
+Both SameBoy and our emulator check `IF & IE` BEFORE advancing cycles:
+- SameBoy L1629: `interrupt_queue = IF & IE` then L1632: `GB_advance_cycles(4)`
+- Our implementation: `HandleInterrupts()` then `FlushPendingCycles()`
+
+The issue is not WHEN IF is set, but WHEN the CPU reads it:
+- CPU reads IF at start of each Step() (after previous batch's TickComponents)
+- IF set at dot 252 during batch 252-255 (after Mode 0 delay fix)
+- CPU sees IF on NEXT Step() starting at dot 256
+- SCX=0 (dot 252) and SCX=1 (dot 253) both in M-cycle 63, both seen at dot 256
+
+### Session 2 Findings (2025-12-27)
+
+#### Fixed: Mode 0 Interrupt Timing (Removed Incorrect Delay)
+
+The 1-cycle Mode 0 interrupt delay was INCORRECT. Analysis of SameBoy L2099-2108:
+- `cycles_for_line++` at L2099 increments to 256
+- `GB_SLEEP` at L2100 deducts from execution budget, NOT cycles_for_line
+- `GB_STAT_update` at L2108 fires at cycles_for_line=256
+
+GB_SLEEP is a coroutine yield mechanism, not a timing delay. The interrupt fires at the SAME cycle as the mode transition. Removed the delay and CheckStatInterrupt now fires immediately when lcd_x reaches 160.
+
+#### Fixed: Immediate IF Bit Update via Callback
+
+Added `irq_callback` to PPU per SameBoy L558: IF bit is set IMMEDIATELY when interrupt condition is met, not batched after M-cycle. Connected to `interrupts->RequestInterrupt()` in Emulator.
+
+#### Rejected: Mode 3 Start Shift
+
+Attempted shifting Mode 3 start from dot 85 to dot 84 to align M-cycle buckets. This caused 5 regressions (82/89 vs 87/89) in other timing tests. **This approach is NOT the correct fix.**
+
+#### Current State (87/89)
+
+- SCX=0: Mode 0 at dot 252, IF at dot 252 (mod 4 = 0) → M-cycle 63
+- SCX=1: Mode 0 at dot 253, IF at dot 253 (mod 4 = 1) → M-cycle 63
+- SCX=4: Mode 0 at dot 256, IF at dot 256 (mod 4 = 0) → M-cycle 64
+
+Current groupings: 0,1,2,3 | 4,5,6,7
+Test expects: 0 | 1,2,3,4 | 5,6,7
+
+The timing is off by 1 cycle at a fundamental level. Either:
+1. Mode 3 base timing is incorrect (but shifting breaks other tests)
+2. There's a subtle timing difference elsewhere in the PPU
+3. The test ROM relies on specific DMG model timing we haven't implemented
+
+### Implemented: DMG 2+2 Split HALT Timing
+
+Per SameBoy sm83_cpu.c L1625-1632, DMG HALT uses a 2+2 cycle split:
+1. `GB_advance_cycles(gb, 2)` - First 2 T-cycles
+2. `interrupt_queue = IE & IF` - Capture IF state
+3. `GB_advance_cycles(gb, 2)` - Second 2 T-cycles
+4. Check `interrupt_queue` to wake from HALT
+
+This allows interrupt detection at a 2-cycle granularity during HALT instead of 4-cycle.
+
+Implemented in CPU::Step():
+```cpp
+tick_callback(2);   // Process 2 cycles
+uint8_t if_reg = bus_read(0xFF0F);  // Read IF
+if (if_reg & ie_reg) {
+    halted = false;
+    tick_callback(2);  // Remaining 2 cycles
+    return 4;
+}
+tick_callback(2);  // Second 2 cycles
+return 4;
+```
+
+Result: 87/89 passing (no regressions), but hblank_ly_scx_timing-GS still fails.
+
+### Remaining Issue: CPU/PPU Alignment at IF Check
+
+The M-cycle bucket where an interrupt lands depends on the exact alignment between:
+1. When the PPU fires the interrupt (e.g., dot 252 for SCX=0)
+2. When the CPU's 2-cycle IF check window occurs
+
+For SCX=0 and SCX=1 to be in different M-cycle buckets:
+- SCX=0 interrupt (dot 252) must be caught BEFORE SCX=1
+- This requires the IF check to happen at dot 252 exactly
+
+Current timing shows both SCX=0 (dot 252) and SCX=1 (dot 253) fire during the same tick(2) call, so both are seen in the same check.
+
+### Verification: HALT Wake IS Working
+
+Added debug tracing to confirm HALT wake mechanism:
+- Output: `HALT wake: IF=0xE2 IE=0x02`
+- This confirms the CPU IS waking via the mid-M-cycle check (not HandleInterrupts)
+- IF=0xE2 includes STAT bit (0x02) which matches IE=0x02
+
+**The 2+2 split HALT IS detecting interrupts at 2-cycle granularity.**
+
+The test failure is not about HALT detection timing - it's about what happens AFTER wake:
+- The test measures cycles from interrupt handler start to LY change
+- Expected: SCX=0 → 51 cycles, SCX=1-4 → 50 cycles, SCX=5-7 → 49 cycles
+- The issue is the MODE 3 DURATION not creating the correct cycle counts
+
+### Root Cause Analysis (Updated)
+
+The test expects:
+- SCX=0: 51 cycles from handler to LY change (1 M-cycle more than SCX=1)
+- SCX=1: 50 cycles (same as SCX=2,3,4)
+
+For this to work, the MODE 0 INTERRUPT for SCX=0 must fire 4 T-cycles earlier than SCX=1-4.
+
+Current timing:
+- SCX=0: Mode 0 at dot 252
+- SCX=1: Mode 0 at dot 253
+- Difference: 1 T-cycle, not 4 T-cycles
+
+The 1 T-cycle difference per SCX value is correct for MODE 3 DURATION (as per `167 + (SCX & 7)`), but the TEST expects M-CYCLE QUANTIZED differences, which require 4 T-cycle jumps.
+
+### Implemented: LY Visible Change at Dot 3
+
+Per SameBoy L1770-1774:
+```c
+GB_SLEEP(2);  // L1770
+GB_SLEEP(1);  // L1773
+gb->io_registers[GB_IO_LY] = gb->current_line;  // L1774
+```
+
+The visible LY register changes after 2+1 = 3 cycles of the new line start.
+
+Changed `dot_counter == 0` to `dot_counter == 3` for LY visible change.
+
+Result: 87/89 passing (no regressions).
+
+### Implemented: Immediate Interrupt Dispatch After HALT Wake
+
+Per SameBoy L1643-1700: After HALT wakes (halted=false), the interrupt dispatch code runs in the SAME GB_cpu_run() call, not the next one.
+
+Our original code did `return 4` after wake, causing dispatch to happen in NEXT Step() call - adding 4 T-cycles delay.
+
+Fixed by using `goto handle_interrupts` to jump to HandleInterrupts immediately after wake.
+
+Result: 87/89 passing (no regressions).
+
+### Current State
+
+All hardware-accurate changes implemented:
+1. Immediate IF bit update (irq_callback)
+2. Mode 0 fires immediately at mode transition
+3. DMG 2+2 split HALT for 2-cycle interrupt detection granularity
+4. Immediate interrupt dispatch after HALT wake
+5. LY visible change at dot 3 (not dot 0)
+
+The SCX timing test still fails. The test expects:
+- SCX=0: 49-50 M-cycles from HALT wake to LY change boundary
+- Our timing gives approximately 51-52 M-cycles
+
+Difference: ~4-8 T-cycles (1-2 M-cycles) too slow.
+
+### Session Update: Mode 0 1-Cycle Delay Implementation
+
+Per SameBoy L2099-2108, Mode 0 STAT fires 1 cycle AFTER the mode transition:
+```c
+gb->cycles_for_line++;     // L2099: 255 -> 256
+GB_SLEEP(1);               // L2100: 1-cycle delay
+// ... set mode=0 ...
+GB_STAT_update(gb);        // L2108: STAT fires at cycle 257
+```
+
+**Implementation:**
+1. Set `mode0_interrupt_pending = true` when lcd_x reaches 160 (StepPixelTransfer)
+2. Fire `CheckStatInterrupt()` on the first cycle of StepHBlank
+
+**Result:** Mode 0 STAT now fires at dot 253 (was dot 252). 87/89 tests pass (no regression).
+
+### Debug Timing Measurements
+
+Using a global cycle counter, measured the exact timing from Mode 0 STAT to LY visible change:
+
+| Measurement | Value |
+|-------------|-------|
+| Mode 0 STAT fires | dot 253 (SameBoy cycle 257) |
+| LY visible change | dot 3 of next line |
+| Delta | 206 dots = 51.5 M-cycles |
+
+**Expected by test:** 
+- SCX=0, delay_a=2: 49 M-cycles → LY old
+- SCX=0, delay_b=3: 50 M-cycles → LY new
+- LY changes at ~49.5 M-cycles from HALT wake
+
+**Discrepancy:** ~51.5 - 49.5 = 2 M-cycles (8 dots) too slow from HALT wake.
+
+**Verified components:**
+1. **Mode 0 timing:** Correct - dot 253 = SameBoy cycle 257
+2. **LY visible change:** Correct - dot 3 per SameBoy L1770-1774 (SLEEP 2+1 then LY update)
+3. **Line length:** Correct - 456 dots per SameBoy LINE_LENGTH
+4. **SameBoy uses slow path:** Confirmed - mode3_batching_length returns 0 when Mode 0 IRQ enabled
+
+### Detailed Cycle Count Analysis
+
+**SameBoy Mode 3 cycle budget (SCX=0):**
+- Mode 3 starts at cycle 89 (cycles_for_line set before mode_3_start)
+- 168 render_pixel_if_possible calls (position_in_line: -16 → -7 with SCX jump, then → 160)
+- 167 cycles_for_line++ (last iteration breaks before increment)
+- Mode 3 ends with cycles_for_line = 256 (89 + 167)
+- Then cycles_for_line++ → 257, SLEEP(1), STAT fires
+
+**Our implementation:**
+- Mode 3 starts at dot 85 (check at dot 84, effect at 85)
+- Mode 3 ends at dot 252 (lcd_x = 160)
+- STAT fires at dot 253 (1-cycle delay per SameBoy L2100)
+- LY changes at dot 3 of next line
+
+**The 4-cycle offset:**
+- Our dot 85 = SameBoy cycle 89 (offset +4)
+- This offset applies to Mode 2/3 timing
+- LY at dot 3 = cycle 3 (NO offset for line start events)
+
+**Delta calculation discrepancy:**
+- SameBoy: (456 - 257) + 3 = 202 cycles from STAT to LY
+- Ours: (456 - 253) + 3 = 206 dots from STAT to LY
+- Difference: 4 dots = the offset!
+
+### Speculative Fix Attempt (Reverted)
+
+Attempted to shift Mode 3 start from dot 85 to dot 89 (removing the offset).
+
+**Result:** 82/89 (5 regressions)
+- intr_2_0_timing.gb
+- intr_2_mode0_timing.gb  
+- intr_2_oam_ok_timing.gb
+- lcdon_timing-GS.gb
+- lcdon_write_timing-GS.gb
+
+**Analysis:** The 4-cycle offset is intentional and required for these other timing tests. The offset was likely introduced to pass early OAM/Mode 2 timing tests.
+
+### Root Cause Summary
+
+The `hblank_ly_scx_timing-GS.gb` test failure is caused by:
+1. A 4-cycle offset between dot_counter and SameBoy's cycles_for_line
+2. This offset applies to Mode 2/3 events but NOT to line-start events (LY change)
+3. The inconsistency causes a 4-cycle error in the STAT→LY delta
+
+### Comprehensive 4-Cycle Shift Attempt
+
+Implemented a comprehensive shift of all Mode 2/3 transition events by +4 dots:
+- Mode 3 IRQ: dot 80 → 84
+- VRAM write blocking: dot 83 → 87
+- Mode 3 start: dot 84 → 88 (effect at dot 89)
+- OAM/VRAM read blocking: shifted accordingly
+
+**Results:**
+- Mode 3 ends at dot 256 (was 252)
+- Mode 0 STAT fires at dot 257 (was 253)
+- Delta to LY = 202 dots ✓ (matches SameBoy's 202 cycles)
+
+**BUT:** 82/89 (5 regressions from 87)
+- intr_2_0_timing.gb
+- intr_2_mode0_timing.gb
+- intr_2_oam_ok_timing.gb
+- lcdon_timing-GS.gb
+- lcdon_write_timing-GS.gb
+
+**Analysis:** These tests measure Mode 2→Mode 0 timing. With the shift:
+- Mode 2 IRQ: dot 3 (unchanged)
+- Mode 0 STAT: dot 257 (was 253)
+- New delta: 254 dots (was 250)
+
+The old 250-dot delta was incorrect; 254 matches SameBoy. However, the regressed tests were calibrated for real hardware's 254-cycle timing, and may have been passing due to other compensating issues.
+
+### Conclusion
+
+The 4-cycle shift is technically correct per SameBoy analysis, but requires either:
+1. Re-verification of all timing-related tests
+2. Finding and fixing additional timing inconsistencies
+3. Understanding why the old tests were passing with incorrect timing
+
+**Current status:** Reverted to 87/89 baseline. The fundamental issue is architectural and may require a more comprehensive timing model refactor.
+
